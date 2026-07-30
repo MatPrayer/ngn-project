@@ -1,0 +1,4 @@
+# Python 3.11 required (os-ken and Kathara do not support 3.12+ cleanly).
+# Create the venv with:  ~/.pyenv/versions/3.11.14/bin/python -m venv .venv
+kathara==3.8.3
+os-ken==4.2.1
