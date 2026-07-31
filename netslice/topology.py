@@ -147,6 +147,63 @@ class Topology:
 
     # ------------------------------------------------------------ startup gen
 
+    def _switch_startup(self, switch: str) -> str:
+        lines = [
+            "/usr/share/openvswitch/scripts/ovs-ctl start --system-id=random --no-mlockall",
+            "",
+            "GW=$(ip route | awk '/^default/ {print $3}')",
+            "",
+            "ovs-vsctl add-br br0",
+            "ovs-vsctl set bridge br0 protocols=OpenFlow13",
+            f"ovs-vsctl set bridge br0 other-config:datapath-id={self.dpid(switch):016x}",
+            # Secure fail mode: with no controller the switch forwards nothing,
+            # so a controller crash cannot silently turn the network into a hub.
+            "ovs-vsctl set-fail-mode br0 secure",
+            "",
+        ]
+        for index, link in self.interfaces(switch):
+            iface = f"eth{index}"
+            ofport = index + 1
+            lines.append(f"ip link set {iface} up")
+            lines.append(f"ovs-vsctl add-port br0 {iface} -- set Interface {iface} ofport_request={ofport}")
+            lines.append(self._tc_command(iface, link.capacity_mbps))
+            lines.append("")
+        lines.append(f"ovs-vsctl set-controller br0 tcp:$GW:{OF_PORT}")
+        return "\n".join(lines) + "\n"
+
+    def _host_startup(self, host: str) -> str:
+        ip = self.host_ip(host)
+        lines = [
+            "ip link set eth0 up",
+            f"ip addr add {ip}/{PREFIX_LEN} dev eth0",
+            self._tc_command("eth0", self.access_link(host).capacity_mbps),
+            "",
+            "# Static ARP for every peer: keeps ARP off the data plane entirely,",
+            "# so the controller only ever handles IP flows.",
+        ]
+        for peer in sorted(self.hosts):
+            if peer == host:
+                continue
+            lines.append(
+                f"ip neigh replace {self.host_ip(peer)} lladdr {self.host_mac(peer)} "
+                f"dev eth0 nud permanent"
+            )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _tc_command(iface: str, capacity_mbps: float) -> str:
+        """HTB with equal rate and ceil, so the interface cannot borrow beyond
+        its configured capacity. Applied per interface; because every link has
+        the discipline on both ends, capacity is symmetric."""
+        rate = f"{capacity_mbps:g}mbit"
+        return (
+            f"tc qdisc replace dev {iface} root handle 1: htb default 1 && "
+            f"tc class replace dev {iface} parent 1: classid 1:1 htb "
+            f"rate {rate} ceil {rate} burst 15k"
+        )
+
+    # ------------------------------------------------------------------- lab
+
 def default_topology() -> Topology:
     """Six-switch ring with three chords, one host per switch.
 
