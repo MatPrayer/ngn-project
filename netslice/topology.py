@@ -204,6 +204,53 @@ class Topology:
 
     # ------------------------------------------------------------------- lab
 
+    def build_lab(self) -> Lab:
+        lab = Lab(LAB_NAME)
+
+        for switch in self.switches:
+            lab.get_or_new_machine(switch, image=IMAGE, bridged=True)
+        for host in self.hosts:
+            lab.get_or_new_machine(host, image=IMAGE)
+
+
+        for device, entries in self._ifaces.items():
+            for index, link in entries:
+                mac = self.host_mac(device) if device in self.hosts else None
+                lab.connect_machine_to_link(
+                    device, link.domain, machine_iface_number=index, mac_address=mac
+                )
+
+        for switch in self.switches:
+            lab.create_file_from_string(self._switch_startup(switch), f"{switch}.startup")
+        for host in self.hosts:
+            lab.create_file_from_string(self._host_startup(host), f"{host}.startup")
+
+        return lab
+
+    # ----------------------------------------------------------- serialisation
+
+    def to_dict(self) -> dict:
+        return {
+            "switches": {s: {"dpid": self.dpid(s), "ports": self.port_to_link(s)} for s in self.switches},
+            "hosts": {
+                h: {
+                    "switch": sw,
+                    "ip": self.host_ip(h),
+                    "mac": self.host_mac(h),
+                    "ofport": self.ofport(sw, self.access_link(h)),
+                }
+                for h, sw in self.hosts.items()
+            },
+            "links": [
+                {"id": l.id, "a": l.a, "b": l.b, "capacity_mbps": l.capacity_mbps}
+                for l in self.links
+            ],
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
+
+
 def default_topology() -> Topology:
     """Six-switch ring with three chords, one host per switch.
 
@@ -246,4 +293,15 @@ def default_topology() -> Topology:
     return Topology(switches=switches, hosts=hosts, links=links)
 
 
-# ------------------------------------------------------------------ lifecycle
+
+
+
+def deploy(topology: Optional[Topology] = None) -> Tuple[Topology, Lab]:
+    topology = topology or default_topology()
+    lab = topology.build_lab()
+    Kathara.get_instance().deploy_lab(lab)
+    return topology, lab
+
+
+def undeploy() -> None:
+    Kathara.get_instance().undeploy_lab(lab_name=LAB_NAME)
