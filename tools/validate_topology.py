@@ -195,6 +195,56 @@ def check_shaping_binds(t, lab, results):
 # -------------------------------------------------------------------- check 4
 
 
+def check_flow_removed(t, lab, results):
+    print("[*] check 4: OFPT_FLOW_REMOVED delivery")
+    if FLOWREM_LOG.exists():
+        FLOWREM_LOG.unlink()
+
+    controller = subprocess.Popen(
+        [PYTHON, str(HERE / "flowrem_probe.py")],
+        stdout=(HERE / "flowrem_probe.log").open("w"),
+        stderr=subprocess.STDOUT,
+    )
+    try:
+
+        def events():
+            if not FLOWREM_LOG.exists():
+                return []
+            return [json.loads(line) for line in FLOWREM_LOG.read_text().splitlines() if line.strip()]
+
+        connected = wait_for(
+            lambda: any(e["kind"] == "switch_up" and e["dpid"] == 1 for e in events()), timeout=90
+        )
+        results["flowrem_switch_connected"] = bool(connected)
+        if not connected:
+            print("    s1 never connected to probe controller")
+            return
+
+        # idle=3s and hard=6s, so 12s covers both with margin.
+        wait_for(lambda: len([e for e in events() if e["kind"] == "flow_removed"]) >= 2, timeout=25)
+        time.sleep(1)
+
+        removals = [e for e in events() if e["kind"] == "flow_removed"]
+        reasons = {e["cookie"]: e["reason"] for e in removals}
+        results["flow_removed_events"] = removals
+        results["idle_timeout_delivered"] = reasons.get(0x1001) == "IDLE_TIMEOUT"
+        results["hard_timeout_delivered"] = reasons.get(0x1002) == "HARD_TIMEOUT"
+        results["of_errors"] = [e for e in events() if e["kind"] == "of_error"]
+        for e in removals:
+            print(f"    cookie=0x{e['cookie']:x} reason={e['reason']} after {e['duration_sec']}s")
+    finally:
+        controller.terminate()
+        try:
+            controller.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            controller.kill()
+        # Leave the switches without a controller again.
+        clear_flows(t, lab)
+
+
+# ----------------------------------------------------------------------- main
+
+
 def report(t, results):
     print("\n" + "=" * 66)
     print("TOPOLOGY VALIDATION")
@@ -244,6 +294,7 @@ def main():
 
         check_ports_and_tc(t, lab, results)
         check_shaping_binds(t, lab, results)
+        check_flow_removed(t, lab, results)
         return t, results
     finally:
         print("[*] tearing down ...")
