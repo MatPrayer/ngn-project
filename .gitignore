@@ -7,3 +7,6 @@ spike/spike_results.json
 tools/flowrem_events.jsonl
 tools/flowrem_probe.log
 tools/topology_validation.json
+tools/controller_run.log
+tools/controller_validation.json
+controller_events.jsonl
