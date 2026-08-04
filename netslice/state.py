@@ -266,3 +266,83 @@ class NetworkState:
 
     def flows_on(self, link_id: str) -> List[FlowEntry]:
         return [self.flows[f] for f in self.link_flows.get(link_id, ())]
+
+    def preemptable_capacity(
+        self, link_id: str, priority: int, now: Optional[float] = None
+    ) -> float:
+        """Preemption, phase 1:
+
+            preemptable(l) = residual(l) + Σ bw(f) for f on l with priority(f) < p
+
+        Flows inside their hold-down window are excluded, so the path search
+        never counts on capacity that phase 2 is not allowed to take.
+        """
+        if link_id in self.down_links:
+            return 0.0
+        reclaimable = sum(
+            f.bandwidth_mbps
+            for f in self.flows_on(link_id)
+            if f.priority < priority and not f.in_hold_down(now)
+        )
+        return self.residual.get(link_id, 0.0) + reclaimable
+
+    def victims(
+        self,
+        link_id: str,
+        bandwidth_mbps: float,
+        priority: int,
+        tie_break: str = "fewest",
+        exclude: Optional[Set[str]] = None,
+        now: Optional[float] = None,
+    ) -> Optional[List[FlowEntry]]:
+        """Preemption, phase 2: who to sacrifice on this link.
+
+        Covers the deficit `b - residual(l)`, or returns None if it cannot be
+        covered. Two orderings, both specified, selectable so the report can
+        compare them:
+
+        "fewest"   ascending priority, then descending bandwidth — sacrifice
+                   the least important flows, and among equals the fattest, so
+                   the *number* of interrupted flows is minimised.
+        "best_fit" ascending priority, then the smallest single flow that
+                   covers the deficit if one exists — minimises *wasted*
+                   bandwidth instead.
+
+        `exclude` holds flows already sacrificed elsewhere on the same path;
+        their capacity has been credited into `bandwidth_mbps` by the caller,
+        so counting them again would double-book the same victim.
+        """
+        exclude = exclude or set()
+        deficit = bandwidth_mbps - self.available(link_id)
+        if deficit <= EPS:
+            return []
+
+        candidates = [
+            f
+            for f in self.flows_on(link_id)
+            if f.priority < priority
+            and f.flow_id not in exclude
+            and not f.in_hold_down(now)
+        ]
+
+        if tie_break == "best_fit":
+            sufficient = [f for f in candidates if f.bandwidth_mbps + EPS >= deficit]
+            if sufficient:
+                best = min(sufficient, key=lambda f: (f.priority, f.bandwidth_mbps))
+                return [best]
+            candidates.sort(key=lambda f: (f.priority, f.bandwidth_mbps))
+        else:
+            candidates.sort(key=lambda f: (f.priority, -f.bandwidth_mbps))
+
+        chosen: List[FlowEntry] = []
+        freed = 0.0
+        for flow in candidates:
+            if freed + EPS >= deficit:
+                break
+            chosen.append(flow)
+            freed += flow.bandwidth_mbps
+        if freed + EPS < deficit:
+            return None
+        return chosen
+
+    # ------------------------------------------------------------- link state
