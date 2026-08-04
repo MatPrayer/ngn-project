@@ -345,4 +345,42 @@ class NetworkState:
             return None
         return chosen
 
-    # ------------------------------------------------------------- link state
+
+
+    def set_link_down(self, link_id: str) -> List[FlowEntry]:
+        """Mark a link unusable and return the flows crossing it, worst first.
+
+        Ordered by descending priority, because rerouting takes
+        affected flows in that order, so important flows get first claim on
+        what capacity is left.
+        """
+        self.down_links.add(link_id)
+        affected = self.flows_on(link_id)
+        affected.sort(key=lambda f: (-f.priority, -f.bandwidth_mbps))
+        return affected
+
+    def set_link_up(self, link_id: str) -> None:
+        self.down_links.discard(link_id)
+
+    # -------------------------------------------------------------- reporting
+
+    def active_flows(self) -> List[FlowEntry]:
+        return [f for f in self.flows.values() if f.holds_capacity()]
+
+    def utilisation(self) -> Dict[str, dict]:
+        return {
+            link_id: {
+                "capacity_mbps": capacity,
+                "residual_mbps": round(self.residual[link_id], 4),
+                "used_mbps": round(capacity - self.residual[link_id], 4),
+                "down": link_id in self.down_links,
+                "flows": sorted(self.link_flows[link_id]),
+            }
+            for link_id, capacity in self.capacity.items()
+        }
+
+    def snapshot(self) -> dict:
+        return {
+            "flows": [f.to_dict() for f in self.flows.values()],
+            "links": self.utilisation(),
+        }
