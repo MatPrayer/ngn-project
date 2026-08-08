@@ -499,7 +499,154 @@ class NetSliceController(app_manager.OSKenApp):
                     )
                 )
 
-    # ------------------------------------------------------------- rerouting
+
+
+    def _replace_path(
+        self,
+        flow: FlowEntry,
+        old_path: Sequence[str],
+        allow_preemption: bool,
+        cause: str,
+    ) -> bool:
+        """Find `flow` a new path and move it there. Caller must have released it.
+
+        Returns True if the flow is ACTIVE again. On failure the flow is left
+        FAILED with its entries removed, and it will be retried when a link
+        comes back up.
+        """
+        hosts = self.topology.hosts
+        decision = admission.evaluate(
+            self.state,
+            self.adj,
+            hosts[flow.src],
+            hosts[flow.dst],
+            flow.bandwidth_mbps,
+            flow.priority,
+            policy=flow.policy,
+            tie_break=flow.tie_break,
+            allow_preemption=allow_preemption,
+        )
+
+        offline = (
+            [s for s in decision.path.switches if self._datapath(s) is None]
+            if decision.accepted
+            else []
+        )
+        if not decision.accepted or offline:
+            reason = (
+                f"switches not connected: {', '.join(offline)}"
+                if offline
+                else decision.reason
+            )
+            flow.state = FlowState.FAILED
+            self._delete_flow(flow, old_path)
+            self.record(
+                "reroute_failed",
+                flow_id=flow.flow_id, cause=cause, reason=reason,
+                old_path=list(old_path),
+            )
+            return False
+
+
+
+
+        nested = []
+        for flow_id in decision.victims:
+            victim_path, _ = self.state.release(flow_id, FlowState.PREEMPTED)
+            nested.append((self.state.flows[flow_id], victim_path))
+            self.record("preempted", flow_id=flow_id, by=flow.flow_id,
+                        path=list(victim_path))
+
+        self.state.reserve(flow, decision.path.switches, decision.path.links)
+        flow.reroutes += 1
+        self._install_flow(flow)
+        stale = [s for s in old_path if s not in set(flow.path)]
+        self._delete_flow(flow, stale, drop_meter=False)
+        self.state.mark_hold_down(flow.flow_id)
+        self.record(
+            "rerouted",
+            flow_id=flow.flow_id, cause=cause,
+            old_path=list(old_path), new_path=list(flow.path),
+            preempted=list(decision.victims),
+        )
+
+        for victim, victim_path in nested:
+            self._replace_path(
+                victim, victim_path,
+                allow_preemption=False,
+                cause=f"preempted by {flow.flow_id} during reroute",
+            )
+        return True
+
+
+
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        ofp = msg.datapath.ofproto
+        switch = self._switch_name(msg.datapath.id)
+        if switch is None or msg.reason != ofp.OFPPR_MODIFY:
+            return
+
+        link_id = self.topology.port_to_link(switch).get(msg.desc.port_no)
+        if link_id is None:
+            return
+        link = self.topology.link_by_id(link_id)
+        if link.a in self.topology.hosts or link.b in self.topology.hosts:
+
+            return
+
+        down = bool(msg.desc.state & ofp.OFPPS_LINK_DOWN)
+        self.record(
+            "port_status", switch=switch, port=msg.desc.port_no,
+            link=link_id, link_down=down,
+        )
+        if down:
+            self._handle_link_down(link_id)
+        else:
+            self._handle_link_up(link_id)
+
+    def _handle_link_down(self, link_id: str) -> None:
+        """One port-down notification means the whole link is gone.
+
+        Under the Docker manager a Kathara collision domain is a Linux bridge,
+        not a veth pair, so only the end that was actually downed ever reports
+        (spike/FINDINGS.md check A). Waiting for the second notification would
+        mean waiting forever; the controller knows the topology, so one report
+        is enough to identify the link unambiguously.
+        """
+        with self.lock:
+            if link_id in self.state.down_links:
+                return
+            affected = self.state.set_link_down(link_id)
+            self.record("link_down", link=link_id,
+                        affected=[f.flow_id for f in affected])
+
+
+
+            for flow in affected:
+                old_path, _ = self.state.release(flow.flow_id, FlowState.PREEMPTED)
+                self._replace_path(flow, old_path, allow_preemption=True,
+                                   cause=f"link {link_id} down")
+
+    def _handle_link_up(self, link_id: str) -> None:
+        """No automatic return to original paths — churn for no gain.
+
+        Only FAILED flows are retried, since for them the alternative is no
+        service at all.
+        """
+        with self.lock:
+            if link_id not in self.state.down_links:
+                return
+            self.state.set_link_up(link_id)
+            failed = [f for f in self.state.flows.values() if f.state is FlowState.FAILED]
+            failed.sort(key=lambda f: (-f.priority, -f.bandwidth_mbps))
+            self.record("link_up", link=link_id, retrying=[f.flow_id for f in failed])
+            for flow in failed:
+                self._replace_path(flow, (), allow_preemption=False,
+                                   cause=f"link {link_id} restored")
+
+    # --------------------------------------------------------------- TTL
 
     def _serve_control(self) -> None:
         """Line-oriented JSON control channel.
