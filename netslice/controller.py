@@ -438,6 +438,69 @@ class NetSliceController(app_manager.OSKenApp):
                 )
             dp.send_msg(parser.OFPBarrierRequest(dp))
 
+    def _install_meter(self, flow: FlowEntry) -> None:
+        """One drop meter at the ingress switch, at the reserved rate.
+
+        This is what makes the reservation binding rather than advisory: a flow
+        that sends beyond what it asked for has the excess dropped, so it
+        cannot eat the capacity admission control promised to somebody else
+        The spike measured 5.56 Mbps through a 5000 kbps meter, so one
+        drop band is enough — which is all OVS offers here anyway.
+        """
+        dp = self._datapath(flow.ingress)
+        if dp is None:
+            return
+        ofp, parser = dp.ofproto, dp.ofproto_parser
+        band = parser.OFPMeterBandDrop(rate=int(flow.bandwidth_mbps * 1000), burst_size=0)
+
+
+
+        dp.send_msg(parser.OFPMeterMod(datapath=dp, command=ofp.OFPMC_DELETE, meter_id=flow.cookie))
+        dp.send_msg(
+            parser.OFPMeterMod(
+                datapath=dp,
+                command=ofp.OFPMC_ADD,
+                flags=ofp.OFPMF_KBPS,
+                meter_id=flow.cookie,
+                bands=[band],
+            )
+        )
+
+    def _delete_flow(self, flow: FlowEntry, switches: Sequence[str], drop_meter: bool = True) -> None:
+        """Remove this flow's entries from `switches`, by cookie.
+
+        Deleting by cookie takes both directions in one message and cannot
+        touch another flow, since cookies are unique per flow.
+        """
+        for switch in switches:
+            dp = self._datapath(switch)
+            if dp is None:
+                continue
+            ofp, parser = dp.ofproto, dp.ofproto_parser
+            dp.send_msg(
+                parser.OFPFlowMod(
+                    datapath=dp,
+                    cookie=flow.cookie,
+                    cookie_mask=0xFFFFFFFFFFFFFFFF,
+                    command=ofp.OFPFC_DELETE,
+                    table_id=ofp.OFPTT_ALL,
+                    out_port=ofp.OFPP_ANY,
+                    out_group=ofp.OFPG_ANY,
+                    match=parser.OFPMatch(),
+                )
+            )
+        if drop_meter and flow.ingress in switches:
+            dp = self._datapath(flow.ingress)
+            if dp is not None:
+                ofp, parser = dp.ofproto, dp.ofproto_parser
+                dp.send_msg(
+                    parser.OFPMeterMod(
+                        datapath=dp, command=ofp.OFPMC_DELETE, meter_id=flow.cookie
+                    )
+                )
+
+    # ------------------------------------------------------------- rerouting
+
     def _serve_control(self) -> None:
         """Line-oriented JSON control channel.
 
