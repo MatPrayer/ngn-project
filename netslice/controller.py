@@ -646,7 +646,44 @@ class NetSliceController(app_manager.OSKenApp):
                 self._replace_path(flow, (), allow_preemption=False,
                                    cause=f"link {link_id} restored")
 
-    # --------------------------------------------------------------- TTL
+
+
+    @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
+    def flow_removed_handler(self, ev):
+        msg = ev.msg
+        ofp = msg.datapath.ofproto
+        if msg.reason not in (ofp.OFPRR_IDLE_TIMEOUT, ofp.OFPRR_HARD_TIMEOUT):
+
+            return
+
+        reason = "IDLE_TIMEOUT" if msg.reason == ofp.OFPRR_IDLE_TIMEOUT else "HARD_TIMEOUT"
+        switch = self._switch_name(msg.datapath.id)
+        flow_id = self._by_cookie.get(msg.cookie)
+        if flow_id is None:
+            return
+
+        with self.lock:
+            flow = self.state.flows.get(flow_id)
+            if flow is None or not flow.holds_capacity():
+                return
+
+
+
+            if switch != flow.ingress:
+                self.record("expiry_ignored", flow_id=flow_id, switch=switch, reason=reason)
+                return
+
+            path, _ = self.state.release(flow_id, FlowState.EXPIRED)
+            self._delete_flow(flow, path)
+            self._by_cookie.pop(flow.cookie, None)
+            self.record(
+                "flow_expired",
+                flow_id=flow_id, reason=reason, path=list(path),
+                duration_sec=msg.duration_sec,
+                bandwidth_mbps=flow.bandwidth_mbps,
+            )
+
+    # ---------------------------------------------------------- control socket
 
     def _serve_control(self) -> None:
         """Line-oriented JSON control channel.
