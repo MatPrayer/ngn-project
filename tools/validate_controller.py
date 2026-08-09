@@ -244,6 +244,49 @@ def check_preemption(results):
     send({"cmd": "clear"})
 
 
+def check_link_failure(t, lab, results):
+    print("[*] check 8: link failure rerouting")
+    time.sleep(1)
+    reply = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 3,
+                  "priority": 1, "idle_timeout": 300})
+    if not reply.get("ok"):
+        return check(results, "reroute_on_link_down", False, reason=reply.get("reason"))
+    flow_id = reply["flow"]["flow_id"]
+    original = reply["flow"]["path"]
+
+    # Down the s2 end of s2--s3, which the widest path uses.
+    index = next(i for i, link in t.interfaces("s2") if link.id == "s2--s3")
+    started = time.monotonic()
+    sh("s2", f"ip link set eth{index} down", lab)
+
+    rerouted = wait_for(
+        lambda: next((e for e in events()
+                      if e["kind"] in ("rerouted", "reroute_failed") and e["flow_id"] == flow_id),
+                     None),
+        timeout=30,
+    )
+    latency = round((rerouted["mono"] - started) * 1000, 1) if rerouted else None
+    check(results, "reroute_on_link_down",
+          rerouted is not None and rerouted["kind"] == "rerouted",
+          old_path=original, new_path=(rerouted or {}).get("new_path"),
+          latency_ms=latency)
+
+    # And the traffic actually follows the new path.
+    port = reply["flow"]["tp_dst"]
+    sh("h4", f"iperf3 -s -p {port} -D --logfile /tmp/iperf-{port}.log", lab)
+    time.sleep(1)
+    out, _, _ = sh("h1", f"iperf3 -c {t.host_ip('h4')} -p {port} -t 5 -J", lab)
+    measured = parse_iperf_mbps(out)
+    check(results, "traffic_survives_reroute", measured is not None and measured > 1.0,
+          measured_mbps=measured)
+
+    sh("s2", f"ip link set eth{index} up", lab)
+    time.sleep(3)
+
+
+# ----------------------------------------------------------------------- main
+
+
 def main():
     results = {}
     t = topo.default_topology()
@@ -284,6 +327,7 @@ def main():
         check_rejection(results)
         check_ttl(results)
         check_preemption(results)
+        check_link_failure(t, lab, results)
         return t, results
     finally:
         if controller is not None:
