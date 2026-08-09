@@ -189,6 +189,61 @@ def check_rejection(results):
           reply.get("ok") is False and bool(reply.get("reason")), reason=reply.get("reason"))
 
 
+def check_ttl(results):
+    print("[*] check 6: TTL releases capacity")
+    reply = send({"cmd": "add", "src": "h3", "dst": "h6", "bandwidth_mbps": 3,
+                  "idle_timeout": 5})
+    if not reply.get("ok"):
+        return check(results, "ttl_expiry", False, reason=reply.get("reason"))
+    flow_id = reply["flow"]["flow_id"]
+    before = send({"cmd": "links"})["links"]
+    link = reply["flow"]["links"][0]
+
+    expired = wait_for(
+        lambda: next((e for e in events()
+                      if e["kind"] == "flow_expired" and e["flow_id"] == flow_id), None),
+        timeout=40,
+    )
+    after = send({"cmd": "links"})["links"]
+    check(results, "ttl_expiry", bool(expired),
+          reason=(expired or {}).get("reason"), duration_sec=(expired or {}).get("duration_sec"))
+    check(results, "ttl_capacity_returned",
+          expired is not None and after[link]["residual_mbps"] > before[link]["residual_mbps"],
+          link=link, before=before[link]["residual_mbps"], after=after[link]["residual_mbps"])
+
+
+def check_preemption(results):
+    print("[*] check 7: preemption")
+    send({"cmd": "clear"})
+    time.sleep(1)
+    # Saturate every way out of s1 with priority-1 traffic.
+    filler = []
+    for dst, bandwidth in (("h2", 10), ("h6", 10), ("h4", 4)):
+        reply = send({"cmd": "add", "src": "h1", "dst": dst, "bandwidth_mbps": bandwidth,
+                      "priority": 1, "idle_timeout": 120, "allow_preemption": False})
+        filler.append(reply)
+    saturated = all(r.get("ok") for r in filler)
+
+    blocked = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 4,
+                    "priority": 1, "idle_timeout": 120})
+    check(results, "saturated_network_refuses", saturated and blocked.get("ok") is False,
+          reason=blocked.get("reason"))
+
+    high = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 4,
+                 "priority": 5, "idle_timeout": 120})
+    check(results, "high_priority_preempts",
+          high.get("ok") and bool(high.get("preempted")),
+          preempted=high.get("preempted"), path=high.get("flow", {}).get("path"))
+
+    flows = {f["flow_id"]: f for f in send({"cmd": "flows"})["flows"]}
+    victims = high.get("preempted") or []
+    states = {v: flows[v]["state"] for v in victims if v in flows}
+    check(results, "victims_resolved",
+          bool(states) and all(s in ("ACTIVE", "FAILED") for s in states.values()),
+          states=states)
+    send({"cmd": "clear"})
+
+
 def main():
     results = {}
     t = topo.default_topology()
@@ -227,6 +282,8 @@ def main():
         check_widest_admission(t, lab, results)
         check_shortest_policy(results)
         check_rejection(results)
+        check_ttl(results)
+        check_preemption(results)
         return t, results
     finally:
         if controller is not None:
