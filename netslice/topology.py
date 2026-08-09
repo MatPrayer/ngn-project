@@ -305,3 +305,76 @@ def deploy(topology: Optional[Topology] = None) -> Tuple[Topology, Lab]:
 
 def undeploy() -> None:
     Kathara.get_instance().undeploy_lab(lab_name=LAB_NAME)
+
+
+def running_machines() -> List[str]:
+    """Names of the lab's containers that are currently up, or [] if none are.
+
+    Used by `status` and by the deploy guard: deploying on top of a running lab
+    is not an error, but it is almost never what was meant.
+    """
+    try:
+        containers = Kathara.get_instance().get_machines_api_objects(lab_name=LAB_NAME)
+    except Exception:  # noqa: BLE001 - no lab, or no container runtime at all
+        return []
+    # Container names are kathara_<user>_<device>_<hash>; report the device.
+    devices = set(default_topology().switches) | set(default_topology().hosts)
+    return sorted(
+        {device for api in containers for device in devices if f"_{device}_" in api.name}
+    )
+
+
+def main(argv=None) -> int:
+    """`python -m netslice.topology deploy|undeploy|status|json`.
+
+    The lab and the controller are separate lifetimes: the controller can run
+    with no lab (it just has no switches), and the lab can run with no
+    controller (secure fail mode means it forwards nothing). Both have to be up
+    for anything to work, which is exactly the thing that is easy to forget.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="netslice.topology", description=main.__doc__)
+    parser.add_argument(
+        "action", choices=["deploy", "undeploy", "status", "json"],
+        help="deploy: start the containers; undeploy: remove them; "
+             "status: what is running; json: print the topology and exit",
+    )
+    args = parser.parse_args(argv)
+    topology = default_topology()
+
+    if args.action == "json":
+        print(topology.to_json())
+        return 0
+
+    if args.action == "status":
+        machines = running_machines()
+        if not machines:
+            print(f"lab '{LAB_NAME}' is not deployed")
+            print("  deploy it with:  python -m netslice.topology deploy")
+            return 1
+        print(f"lab '{LAB_NAME}': {len(machines)} containers up")
+        print("  " + " ".join(machines))
+        return 0
+
+    if args.action == "undeploy":
+        undeploy()
+        print(f"lab '{LAB_NAME}' removed")
+        return 0
+
+    already = running_machines()
+    if already:
+        print(f"lab '{LAB_NAME}' is already deployed ({len(already)} containers).")
+        print("  redeploy with:  python -m netslice.topology undeploy && "
+              "python -m netslice.topology deploy")
+        return 1
+
+    deploy(topology)
+    print(f"lab '{LAB_NAME}' deployed: {len(topology.switches)} switches, "
+          f"{len(topology.hosts)} hosts")
+    print("  switches take ~15 s to run their startup scripts and connect")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
