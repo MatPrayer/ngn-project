@@ -902,14 +902,53 @@ class NetSliceController(app_manager.OSKenApp):
         return {"ok": False, "reason": f"unknown command {command!r}"}
 
 
-def main():
+PORTS = (
+    ("127.0.0.1", OF_PORT, "OpenFlow (switches connect here)"),
+    (CONTROL_ADDR[0], CONTROL_ADDR[1], "control socket (netslice.client)"),
+    (DASHBOARD_ADDR[0], DASHBOARD_ADDR[1], "dashboard"),
+)
+
+
+def _ports_in_use():
+    busy = []
+    for host, port, what in PORTS:
+        with socket.socket() as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex((host, port)) == 0:
+                busy.append(f"  {host}:{port}  {what}")
+    return busy
+
+
+def main() -> int:
     from os_ken import cfg, log
+
+    # Check the ports before os-ken does. It reports a failed bind as
+    # "AttributeError: 'HubThread' object has no attribute 'kill'" — thrown by
+    # its own broken shutdown path, with no mention of the port, of binding, or
+    # of anything else true. Anyone who has not seen it before loses an hour.
+    busy = _ports_in_use()
+    if busy:
+        print("cannot start: something is already listening on\n" + "\n".join(busy),
+              file=sys.stderr)
+        print("\nanother controller is probably running. Stop it with:\n"
+              "  pkill -f 'netslice.controller'", file=sys.stderr)
+        return 1
 
     log.early_init_log(20)
     cfg.CONF(args=[], project="os_ken")
     log.init_log()
-    app_manager.AppManager.run_apps([__name__])
+    try:
+        app_manager.AppManager.run_apps([__name__])
+    except AttributeError as exc:
+        if "'HubThread' object has no attribute 'kill'" not in str(exc):
+            raise
+        print("\ncontroller stopped. The AttributeError above comes from "
+              "os-ken's own shutdown path, not from netslice, if this was "
+              "not intentional, the real cause is logged before it.",
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
