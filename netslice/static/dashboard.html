@@ -52,12 +52,27 @@
   .body { padding: 12px 14px; min-height: 0; }
   .col { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 
+  /* Topology takes what is left after the event log; the log keeps a floor so
+     it stays useful, and a ceiling so it never crowds out the map. */
+  #topology { flex: 1 1 auto; }
+  #topology .body { flex: 1; display: flex; min-height: 0; padding: 8px; }
   #eventpanel { flex: 0 1 auto; max-height: 34%; min-height: 108px; }
   #formpanel { flex: 0 1 auto; }
   #formpanel .body { overflow-y: auto; }
-  /* The flow table is the thing being demonstrated — always leave some of it. */
+  /* The flow table is the thing being demonstrated, so always leave some of it. */
   #flowpanel { flex: 1 1 auto; min-height: 150px; }
 
+  svg { display: block; flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+  .link { stroke-linecap: round; cursor: pointer; }
+  .link.down { stroke-dasharray: 6 5; }
+  .link.lit { stroke: var(--accent) !important; }
+  .access { stroke: #30363d; stroke-width: 2; }
+  .node { fill: #1f6feb; stroke: #0b3d91; }
+  .node.off { fill: #3d444d; stroke: #21262d; }
+  .hostnode { fill: #6e40c9; stroke: #4c2889; }
+  .nlabel { fill: #fff; font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+  .llabel { fill: var(--dim); font-size: 10px; text-anchor: middle; dominant-baseline: central; }
+  .llabel.lit { fill: var(--accent); }
 
   form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--dim); }
@@ -152,6 +167,13 @@
 
 <main>
   <div class="col">
+    <section id="topology">
+      <h2>Topology — residual capacity</h2>
+      <div class="body">
+        <svg id="map" viewBox="0 0 660 560" preserveAspectRatio="xMidYMid meet"
+             role="img" aria-label="network topology"></svg>
+      </div>
+    </section>
     <section id="eventpanel">
       <h2>Event log</h2>
       <div id="events"><div class="empty">no events yet</div></div>
@@ -195,6 +217,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
 
 let topo = null, place = {}, centre = { x: 330, y: 275 };
 let selected = null, lastSeq = 0, everConnected = false;
@@ -203,6 +226,138 @@ const api = async (path, opts) => {
   const r = await fetch(path, opts);
   return r.json();
 };
+
+function el(name, attrs, text) {
+  const node = document.createElementNS(SVGNS, name);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/* ---------------------------------------------------------------- topology */
+
+function layout() {
+  const switches = Object.keys(topo.switches);
+  const cx = centre.x, cy = centre.y, r = 185, hostR = 250;
+  switches.forEach((s, i) => {
+    // Start at the top and go clockwise, so s1 sits where the drawings in the
+    // docs put it and the ring reads the same way on paper and on screen.
+    const a = (i / switches.length) * 2 * Math.PI - Math.PI / 2;
+    place[s] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+    place["@" + s] = { x: cx + hostR * Math.cos(a), y: cy + hostR * Math.sin(a) };
+  });
+}
+
+function isSwitch(n) { return topo.switches[n] !== undefined; }
+
+function linkColour(link) {
+  if (link.down) return "#f85149";
+  const used = link.used_mbps / link.capacity_mbps;
+  if (used <= 0.001) return "#2d5a3d";
+  if (used < 0.5) return "#3fb950";
+  if (used < 0.85) return "#d29922";
+  return "#f85149";
+}
+
+/* Where to write each link's capacity label.
+ *
+ * The midpoint is the obvious answer and the wrong one here: the three chords
+ * are diameters of the ring, so all three midpoints land on the same point and
+ * the labels stack. Worse, that point is where the chords cross, which is the
+ * busiest part of the picture.
+ *
+ * So: slide a label along its own link until it is clear of the ones already
+ * placed, and never offer the midpoint to a link that runs through the middle.
+ * Deterministic, and general enough to survive a change of topology.
+ */
+function labelPositions(coreLinks) {
+  const MIN_GAP = 34;      // a label box is 54x16; this keeps them apart
+  const HUB = 46;          // "passes through the middle" radius
+  const positions = {};
+  const taken = [];
+
+  for (const link of coreLinks) {
+    const a = place[link.a], b = place[link.b];
+    const at = (t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    const mid = at(0.5);
+    const throughHub = Math.hypot(mid.x - centre.x, mid.y - centre.y) < HUB;
+    const candidates = throughHub ? [0.3, 0.7, 0.22, 0.78] : [0.5, 0.34, 0.66, 0.26];
+
+    let chosen = null;
+    for (const t of candidates) {
+      const p = at(t);
+      if (taken.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= MIN_GAP)) {
+        chosen = p;
+        break;
+      }
+    }
+    chosen = chosen || at(candidates[0]);   // give up gracefully, never crash
+    taken.push(chosen);
+    positions[link.id] = chosen;
+  }
+  return positions;
+}
+
+function drawMap(state) {
+  const svg = $("map");
+  svg.textContent = "";
+  const lit = new Set(selected && state.flowsById[selected] ? state.flowsById[selected].links : []);
+
+  // Access links first, so they sit under everything else.
+  for (const link of topo.links) {
+    if (isSwitch(link.a) && isSwitch(link.b)) continue;
+    const host = isSwitch(link.a) ? link.b : link.a;
+    const sw = isSwitch(link.a) ? link.a : link.b;
+    const h = place["@" + sw], s = place[sw];
+    svg.appendChild(el("line", { x1: h.x, y1: h.y, x2: s.x, y2: s.y, class: "access" }));
+    void host;
+  }
+
+  const coreLinks = topo.links.filter((l) => isSwitch(l.a) && isSwitch(l.b));
+  const labelAt = labelPositions(coreLinks);
+
+  for (const link of coreLinks) {
+    const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
+    const a = place[link.a], b = place[link.b];
+    const on = lit.has(link.id);
+    svg.appendChild(el("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      class: "link" + (live.down ? " down" : "") + (on ? " lit" : ""),
+      stroke: linkColour(live),
+      "stroke-width": on ? 6 : 2 + live.capacity_mbps / 7,
+      "data-link": link.id,
+    }));
+  }
+
+  // Labels after every line, so none of them is drawn over.
+  for (const link of coreLinks) {
+    const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
+    const on = lit.has(link.id);
+    const p = labelAt[link.id];
+    svg.appendChild(el("rect", {
+      x: p.x - 27, y: p.y - 8, width: 54, height: 16, rx: 8, fill: "#0d1117", opacity: .9,
+    }));
+    svg.appendChild(el("text", {
+      x: p.x, y: p.y, class: "llabel" + (on ? " lit" : ""),
+    }, live.down ? "DOWN" : `${(+live.residual_mbps).toFixed(1)}/${live.capacity_mbps}`));
+  }
+
+  for (const [host, info] of Object.entries(state.hosts)) {
+    const p = place["@" + info.switch];
+    svg.appendChild(el("circle", { cx: p.x, cy: p.y, r: 17, class: "hostnode" }));
+    svg.appendChild(el("text", { x: p.x, y: p.y, class: "nlabel" }, host));
+  }
+
+  for (const [name, info] of Object.entries(state.switches)) {
+    const p = place[name];
+    svg.appendChild(el("circle", {
+      cx: p.x, cy: p.y, r: 23, class: "node" + (info.connected ? "" : " off"),
+    }));
+    svg.appendChild(el("text", { x: p.x, y: p.y, class: "nlabel" }, name));
+  }
+}
+
+/* ------------------------------------------------------------------- flows */
 
 function drawFlows(state) {
   const box = $("flows");
@@ -297,6 +452,7 @@ async function refresh() {
 
   state.flowsById = Object.fromEntries(state.flows.map((f) => [f.flow_id, f]));
   if (selected && !state.flowsById[selected]) selected = null;
+  drawMap(state);
   drawFlows(state);
 
   const feed = await api(`/api/events?since=${lastSeq}`);
@@ -342,6 +498,7 @@ $("clear").onclick = async () => {
 
 (async function boot() {
   topo = await api("/api/topology");
+  layout();
   const hosts = Object.keys(topo.hosts).sort();
   $("src").innerHTML = hosts.map((h) => `<option>${h}</option>`).join("");
   $("dst").innerHTML = hosts.map((h) => `<option>${h}</option>`).join("");
