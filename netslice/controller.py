@@ -26,10 +26,15 @@ which is what makes the admission-control guarantee real rather than advisory.
 
 from __future__ import annotations
 
+import itertools
 import json
+import socket
+import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Deque, Dict, List, Optional, Sequence
 
 from os_ken.base import app_manager
 from os_ken.controller import ofp_event
@@ -42,7 +47,7 @@ from os_ken.controller.handler import (
 from os_ken.lib import hub
 from os_ken.ofproto import ofproto_v1_3
 
-from netslice import admission, routing
+from netslice import admission, dashboard, routing
 from netslice.state import (
     IPPROTO_TCP,
     IPPROTO_UDP,
@@ -50,18 +55,27 @@ from netslice.state import (
     FlowState,
     NetworkState,
 )
-from netslice.topology import default_topology
+from netslice.topology import OF_PORT, default_topology
 
 ETH_TYPE_IP = 0x0800
 
-# OpenFlow priority of an admitted flow entry. Unrelated to the flow's own
-# priority class, which is a controller-side concept used for preemption and
-# never reaches the switch: all admitted entries match a distinct 5-tuple, so
-# they cannot shadow one another and all sit at the same OF priority.
+
+
+
+
 FLOW_PRIORITY = 100
 TABLE_MISS_PRIORITY = 0
 
 CONTROL_ADDR = ("127.0.0.1", 9000)
+DASHBOARD_ADDR = ("127.0.0.1", 8080)
+
+
+
+EVENT_BUFFER = 500
+
+
+
+STATS_INTERVAL = 2.0
 
 ROOT = Path(__file__).resolve().parent.parent
 EVENT_LOG = ROOT / "controller_events.jsonl"
@@ -69,6 +83,21 @@ EVENT_LOG = ROOT / "controller_events.jsonl"
 DEFAULT_IDLE_TIMEOUT = 30
 DEFAULT_HARD_TIMEOUT = 0
 DEFAULT_PRIORITY = 1
+
+
+def _spawn_daemon(target, *args) -> threading.Thread:
+    """`hub.spawn`, but the thread cannot outlive a dying process.
+
+    Under HUB_TYPE=native `hub.spawn` returns a `threading.Thread` with the
+    default `daemon=False`, and it starts the thread before handing it back, so
+    there is no chance to change that. Three such threads, all looping forever,
+    mean that when the controller fails at startup the traceback is printed and
+    the process then just *sits there* — still holding its ports, so the next
+    attempt fails for a different reason than the first one did.
+    """
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    thread.start()
+    return thread
 
 
 class NetSliceController(app_manager.OSKenApp):
@@ -83,24 +112,139 @@ class NetSliceController(app_manager.OSKenApp):
         self.datapaths: Dict[int, object] = {}
         self._by_cookie: Dict[int, str] = {}
 
-        # Requests arrive on a green thread of their own, switch events on the
-        # os-ken hub. Both mutate state, so both take this first.
+
+
+
+
+
         self.lock = hub.Semaphore()
 
+
+
+
+
+
+
+
+
+        self.event_log: Deque[dict] = deque(maxlen=EVENT_BUFFER)
+        self._event_seq = itertools.count(1)
+
+
+        self.flow_stats: Dict[int, dict] = {}
+
         EVENT_LOG.write_text("")
-        self.control_server = hub.spawn(self._serve_control)
+        self.control_server = _spawn_daemon(self._serve_control)
+        self.stats_poller = _spawn_daemon(self._poll_flow_stats)
+        self.dashboard_server = _spawn_daemon(dashboard.serve, self, DASHBOARD_ADDR)
 
     # ------------------------------------------------------------ event log
 
     def record(self, kind: str, **fields) -> dict:
         """Append one event. The dashboard and the report plots read this file."""
-        entry = {"kind": kind, "t": time.time(), "mono": time.monotonic(), **fields}
+        entry = {
+            "seq": next(self._event_seq),
+            "kind": kind,
+            "t": time.time(),
+            "mono": time.monotonic(),
+            **fields,
+        }
         with EVENT_LOG.open("a") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
+        self.event_log.append(entry)
         self.logger.info("EVENT %s %s", kind, fields)
         return entry
 
-    # ------------------------------------------------------- switch lifecycle
+    def events_since(self, seq: int = 0, limit: int = 200) -> List[dict]:
+        # list() first: the deque is appended to from OpenFlow handler threads,
+        # and iterating it directly can raise mid-poll.
+        return [e for e in list(self.event_log) if e["seq"] > seq][-limit:]
+
+    # ----------------------------------------------------------- flow counters
+
+    def _poll_flow_stats(self) -> None:
+        """Ask each ingress switch for its flow counters, every STATS_INTERVAL.
+
+        This is what makes the dashboard's "remaining TTL" honest. `idle_timeout`
+        resets whenever traffic matches, and the switch never tells the
+        controller that it did — so the only way to know how long a flow has
+        been quiet is to watch its packet counter stop moving. The same poll
+        gives live per-flow throughput, which the dashboard plots and the
+        evaluation wants anyway.
+        """
+        while True:
+            hub.sleep(STATS_INTERVAL)
+            try:
+                ingresses = {f.ingress for f in self.state.active_flows() if f.ingress}
+                for switch in ingresses:
+                    dp = self._datapath(switch)
+                    if dp is None:
+                        continue
+                    parser = dp.ofproto_parser
+                    dp.send_msg(parser.OFPFlowStatsRequest(dp))
+            except Exception:
+                self.logger.exception("flow stats poll failed")
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def flow_stats_reply_handler(self, ev):
+        switch = self._switch_name(ev.msg.datapath.id)
+        now = time.monotonic()
+
+        for entry in ev.msg.body:
+            flow_id = self._by_cookie.get(entry.cookie)
+            if flow_id is None:
+                continue
+            flow = self.state.flows.get(flow_id)
+
+
+            if flow is None or switch != flow.ingress:
+                continue
+            if entry.match.get("ipv4_src") != self.topology.host_ip(flow.src):
+                continue
+
+            previous = self.flow_stats.get(entry.cookie)
+            moved = previous is None or entry.packet_count != previous["packets"]
+            elapsed = now - previous["at"] if previous else 0.0
+            throughput = (
+                round((entry.byte_count - previous["bytes"]) * 8 / elapsed / 1e6, 3)
+                if previous and elapsed > 0
+                else 0.0
+            )
+            self.flow_stats[entry.cookie] = {
+                "packets": entry.packet_count,
+                "bytes": entry.byte_count,
+                "duration_sec": entry.duration_sec,
+                "at": now,
+                "last_active": now if moved else (previous["last_active"] if previous else now),
+                "throughput_mbps": max(throughput, 0.0),
+            }
+
+    def _flow_view(self, flow: FlowEntry) -> dict:
+        """A flow as the dashboard wants it: the entry plus live counters."""
+        payload = flow.to_dict()
+        stats = self.flow_stats.get(flow.cookie)
+        idle_for = round(time.monotonic() - stats["last_active"], 1) if stats else None
+
+        payload.update(
+            throughput_mbps=stats["throughput_mbps"] if stats else None,
+            bytes=stats["bytes"] if stats else None,
+            idle_for_sec=idle_for,
+
+
+            remaining_idle_sec=(
+                max(0.0, round(flow.idle_timeout - idle_for, 1))
+                if flow.idle_timeout and idle_for is not None
+                else None
+            ),
+            remaining_hard_sec=(
+                max(0.0, round(flow.hard_timeout - stats["duration_sec"], 1))
+                if flow.hard_timeout and stats
+                else None
+            ),
+        )
+        return payload
+
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -298,17 +442,40 @@ class NetSliceController(app_manager.OSKenApp):
         return {"ok": True}
 
     def list_flows(self) -> dict:
-        return {"ok": True, "flows": [f.to_dict() for f in self.state.flows.values()]}
+        with self.lock:
+            return {"ok": True, "flows": [self._flow_view(f) for f in self.state.flows.values()]}
 
     def link_status(self) -> dict:
-        return {"ok": True, "links": self.state.utilisation()}
+        with self.lock:
+            return {"ok": True, "links": self.state.utilisation()}
 
     def snapshot(self) -> dict:
-        payload = self.state.snapshot()
-        payload["switches"] = {
-            s: {"dpid": self.topology.dpid(s), "connected": self._datapath(s) is not None}
-            for s in self.topology.switches
-        }
+        """Everything the dashboard needs for one repaint, in one call.
+
+        Locked like the write paths: os-ken runs on native threads, so a
+        dashboard poll really can land in the middle of a PORT_STATUS handler
+        rerouting flows — and iterating the flow table while it is being
+        rewritten raises rather than returning something merely stale.
+        """
+        with self.lock:
+            return {
+                "ok": True,
+                "flows": [self._flow_view(f) for f in self.state.flows.values()],
+                "links": self.state.utilisation(),
+                "switches": {
+                    s: {"dpid": self.topology.dpid(s), "connected": self._datapath(s) is not None}
+                    for s in self.topology.switches
+                },
+                "hosts": {
+                    h: {"switch": sw, "ip": self.topology.host_ip(h)}
+                    for h, sw in self.topology.hosts.items()
+                },
+            }
+
+    def topology_view(self) -> dict:
+        """The graph itself. Fixed for the lifetime of the controller, so the
+        dashboard fetches it once and only polls the state after that."""
+        payload = self.topology.to_dict()
         payload["ok"] = True
         return payload
 
@@ -728,6 +895,10 @@ class NetSliceController(app_manager.OSKenApp):
             return self.link_status()
         if command == "state":
             return self.snapshot()
+        if command == "topology":
+            return self.topology_view()
+        if command == "events":
+            return {"ok": True, "events": self.events_since(int(request.get("since", 0)))}
         return {"ok": False, "reason": f"unknown command {command!r}"}
 
 
