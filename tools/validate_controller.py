@@ -23,6 +23,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,7 +94,8 @@ def preflight():
     os-ken makes this worse by masking the bind failure behind an
     AttributeError in its own shutdown path, so nothing says "address in use".
     """
-    busy = [f"{host}:{port}" for host, port in (("127.0.0.1", 6653), ("127.0.0.1", 9000))
+    busy = [f"{host}:{port}"
+            for host, port in (("127.0.0.1", 6653), ("127.0.0.1", 9000), ("127.0.0.1", 8080))
             if port_in_use(host, port)]
     if busy:
         print(f"[!] already in use: {', '.join(busy)}")
@@ -169,7 +172,92 @@ def check_widest_admission(t, lab, results):
     check(results, "residual_updated", used,
           charged=sorted(charged),
           residual={l: links[l]["residual_mbps"] for l in sorted(charged)})
-    return flow["flow_id"]
+    return flow
+
+
+def http(path, method="GET", body=None):
+    """Minimal HTTP client, stdlib only. Returns (status, parsed-or-text)."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:8080{path}",
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"} if body is not None else {},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw, status = exc.read().decode(), exc.code
+    except OSError as exc:
+        return 0, str(exc)
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw
+
+
+def check_dashboard(t, lab, results, flow):
+    """The dashboard API, and the flow-counter poll that feeds it.
+
+    The counters are the part worth testing: `idle_timeout` resets on traffic
+    and the switch never says so, so the controller infers activity by watching
+    the packet counter. If that poll is broken the UI shows a TTL that never
+    counts down and a throughput permanently stuck at zero — and nothing else
+    in the system would notice.
+    """
+    print("[*] check 9: dashboard API")
+    status, page = http("/")
+    check(results, "dashboard_serves_page",
+          status == 200 and isinstance(page, str) and "netslice" in page, status=status)
+
+    status, payload = http("/api/topology")
+    check(results, "dashboard_topology",
+          status == 200 and len(payload.get("switches", {})) == 6
+          and len(payload.get("links", [])) == 15, status=status)
+
+    status, payload = http("/api/state")
+    known = {f["flow_id"] for f in payload.get("flows", [])} if status == 200 else set()
+    check(results, "dashboard_state", status == 200 and flow["flow_id"] in known,
+          flows=sorted(known))
+
+    # Traffic in the background, so the counters are moving while we sample.
+    port = flow["tp_dst"]
+    sh("h4", f"iperf3 -s -p {port} -D --logfile /tmp/iperf-dash.log", lab)
+    time.sleep(1)
+    sh("h1", f"nohup iperf3 -c {t.host_ip('h4')} -p {port} -t 20 >/tmp/dash-client.log 2>&1 &", lab)
+    time.sleep(8)
+
+    status, payload = http("/api/state")
+    live = next((f for f in payload.get("flows", []) if f["flow_id"] == flow["flow_id"]), {})
+    check(results, "dashboard_flow_throughput",
+          isinstance(live.get("throughput_mbps"), (int, float)) and live["throughput_mbps"] > 1.0,
+          throughput_mbps=live.get("throughput_mbps"), bytes=live.get("bytes"))
+    check(results, "dashboard_remaining_ttl",
+          live.get("remaining_idle_sec") is not None and live["remaining_idle_sec"] > 0,
+          remaining_idle_sec=live.get("remaining_idle_sec"),
+          idle_for_sec=live.get("idle_for_sec"))
+
+    status, payload = http("/api/flows", "POST",
+                           {"src": "h5", "dst": "h2", "bandwidth_mbps": 2, "priority": 1})
+    created = payload.get("flow", {}).get("flow_id") if status == 200 else None
+    check(results, "dashboard_add_flow", bool(payload.get("ok")) and bool(created),
+          flow_id=created, reason=payload.get("reason"))
+    if created:
+        status, payload = http(f"/api/flows/{created}", "DELETE")
+        check(results, "dashboard_remove_flow", bool(payload.get("ok")), status=status)
+
+    status, payload = http("/api/flows", "POST", {"src": "h1", "nonsense": 1})
+    check(results, "dashboard_rejects_bad_input",
+          status == 400 and payload.get("ok") is False, status=status,
+          reason=payload.get("reason"))
+
+    status, payload = http("/api/events?since=0")
+    check(results, "dashboard_events",
+          status == 200 and len(payload.get("events", [])) > 0,
+          count=len(payload.get("events", [])) if status == 200 else None)
+
+    sh("h1", "pkill -f 'iperf3 -c' || true", lab)
 
 
 def check_shortest_policy(results):
@@ -322,7 +410,9 @@ def main():
             print("[!] the controller already holds flows — results would be meaningless")
             return t, results
 
-        check_widest_admission(t, lab, results)
+        flow = check_widest_admission(t, lab, results)
+        if flow:
+            check_dashboard(t, lab, results, flow)
         check_shortest_policy(results)
         check_rejection(results)
         check_ttl(results)
