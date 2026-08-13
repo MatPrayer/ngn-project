@@ -324,8 +324,33 @@ def running_machines() -> List[str]:
     )
 
 
+def set_link(a: str, b: str, up: bool) -> Tuple[str, int]:
+    """Bring one end of a core link administratively up or down.
+
+    Returns (switch, interface index) so the caller can say what it did.
+
+    The end matters. Under the Docker manager a collision domain is a Linux
+    bridge, not a veth pair, so downing an interface drops carrier only on that
+    container's side — **only the switch named first will notify the
+    controller** (`spike/FINDINGS.md` check A). One notification is enough: the
+    controller knows the topology and treats it as the whole link being down.
+    """
+    topology = default_topology()
+    lo, hi = sorted((a, b))
+    link = topology.link_by_id(f"{lo}--{hi}")
+    if link.a in topology.hosts or link.b in topology.hosts:
+        raise ValueError(f"{link.id} is an access link; host failures are out of scope")
+
+    index = next(i for i, candidate in topology.interfaces(a) if candidate.id == link.id)
+    state = "up" if up else "down"
+    Kathara.get_instance().exec(
+        a, ["sh", "-c", f"ip link set eth{index} {state}"], lab_name=LAB_NAME, stream=False
+    )
+    return a, index
+
+
 def main(argv=None) -> int:
-    """`python -m netslice.topology deploy|undeploy|status|json`.
+    """Lab lifecycle and demo controls.
 
     The lab and the controller are separate lifetimes: the controller can run
     with no lab (it just has no switches), and the lab can run with no
@@ -335,16 +360,52 @@ def main(argv=None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="netslice.topology", description=main.__doc__)
-    parser.add_argument(
-        "action", choices=["deploy", "undeploy", "status", "json"],
-        help="deploy: start the containers; undeploy: remove them; "
-             "status: what is running; json: print the topology and exit",
-    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("deploy", help="start the containers")
+    sub.add_parser("undeploy", help="remove them")
+    sub.add_parser("status", help="what is running")
+    sub.add_parser("json", help="print the topology and exit")
+    sub.add_parser("links", help="per-switch interface map: which ethN is which link")
+
+    for name, verb in (("link-down", "Fail"), ("link-up", "Restore")):
+        p = sub.add_parser(name, help=f"{verb.lower()} a core link, for the rerouting demo")
+        p.add_argument("a", help="switch whose interface is touched — the one that notifies")
+        p.add_argument("b", help="switch at the other end")
+
     args = parser.parse_args(argv)
     topology = default_topology()
 
     if args.action == "json":
         print(topology.to_json())
+        return 0
+
+    if args.action == "links":
+        print("OpenFlow port = interface index + 1\n")
+        for switch in topology.switches:
+            entries = "  ".join(
+                f"eth{i}={link.id}" for i, link in topology.interfaces(switch)
+            )
+            print(f"  {switch}  {entries}")
+        return 0
+
+    if args.action in ("link-down", "link-up"):
+        if not running_machines():
+            print(f"lab '{LAB_NAME}' is not deployed")
+            return 1
+        try:
+            switch, index = set_link(args.a, args.b, up=args.action == "link-up")
+        except (KeyError, ValueError, StopIteration) as exc:
+            print(f"cannot touch {args.a}--{args.b}: {exc}")
+            return 1
+        lo, hi = sorted((args.a, args.b))
+        if args.action == "link-down":
+            print(f"{lo}--{hi} down  ({switch} eth{index})")
+            print(f"  only {switch} reports it — the far end never notices "
+                  f"(collision domains are Linux bridges, not veth pairs)")
+            print(f"  restore with:  python -m netslice.topology link-up {args.a} {args.b}")
+        else:
+            print(f"{lo}--{hi} up  ({switch} eth{index})")
+            print("  FAILED flows are retried; flows already rerouted stay where they are")
         return 0
 
     if args.action == "status":
