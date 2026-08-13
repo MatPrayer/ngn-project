@@ -151,7 +151,132 @@ def path_of(flow_id: str) -> str:
     return "-".join(flow["path"]) if flow and flow["path"] else "—"
 
 
-# ------------------------------------------------------------------ the demo
+
+
+
+class Demo:
+    """A numbered, narrated sequence of steps."""
+
+    def __init__(self, title: str, reference: str, description: str = ""):
+        parser = argparse.ArgumentParser(description=f"{title} — {description}")
+        parser.add_argument("--no-pause", action="store_true",
+                            help="run straight through, for a rehearsal")
+        parser.add_argument("--quick", action="store_true",
+                            help="shorter iperf runs; less accurate, faster")
+        self.args = parser.parse_args()
+        self.paused = not self.args.no_pause and sys.stdin.isatty()
+        self.n = 0
+        self.title = title
+        self._last_live = 0.0
+
+        print()
+        print(bold(f"  {title}"))
+        print(dim(f"  {reference}"))
+        if description:
+            print(dim(f"  {description}"))
+        print(dim("  " + "─" * 66))
+
+    # ---------------------------------------------------------- narration
+
+    def step(self, text: str) -> None:
+        self.n += 1
+        print()
+        print(f"  {blue(f'[{self.n}]')} {bold(text)}")
+
+    def say(self, text: str) -> None:
+        print(f"      {text}")
+
+    def note(self, text: str) -> None:
+        """The 'why' — what the audience should take away from this step."""
+        print(f"      {dim(text)}")
+
+    def good(self, text: str) -> None:
+        print(f"      {green(text)}")
+
+    def bad(self, text: str) -> None:
+        print(f"      {red(text)}")
+
+    def warn(self, text: str) -> None:
+        print(f"      {yellow(text)}")
+
+    def live(self, text: str) -> None:
+        """A status line that overwrites itself while something is counting down.
+
+        On a terminal that is a carriage return. When the output is being
+        captured — a rehearsal piped to a file, or CI — `\\r` would run every
+        update together on one unreadable line, so print sparingly instead.
+        """
+        if _COLOUR:
+            print(f"      {text:<68}", end="\r", flush=True)
+        else:
+            now = time.monotonic()
+            if now - self._last_live >= 1.8:
+                self._last_live = now
+                print(f"      {text}")
+
+    def live_done(self) -> None:
+        if _COLOUR:
+            print(" " * 76, end="\r")
+
+    def pause(self, prompt: str = "press enter") -> None:
+        if self.paused:
+            try:
+                input(dim(f"\n      ── {prompt} ──"))
+            except (EOFError, KeyboardInterrupt):
+                raise SystemExit("\ninterrupted")
+        else:
+            time.sleep(0.7)
+
+    # ------------------------------------------------------------- actions
+
+    def allocate(self, src, dst, bandwidth, **kwargs) -> dict:
+        """Request a flow and narrate the outcome."""
+        reply = request(src=src, dst=dst, bandwidth_mbps=bandwidth, **kwargs)
+        priority = kwargs.get("priority", 1)
+        if reply.get("ok"):
+            flow = reply["flow"]
+            line = (f"ADMITTED  {flow['flow_id']}  {src}->{dst}  {bandwidth} Mbps  "
+                    f"prio {priority}  via {'-'.join(flow['path'])}")
+            self.good(line)
+            if reply.get("preempted"):
+                self.warn(f"          preempted {', '.join(reply['preempted'])}")
+        else:
+            self.bad(f"REJECTED  {src}->{dst}  {bandwidth} Mbps  prio {priority}")
+            self.say(dim(f"          {reply.get('reason')}"))
+        return reply
+
+    def show_links(self, link_ids=None) -> None:
+        data = links()
+        for link_id in sorted(link_ids or data):
+            entry = data[link_id]
+            used, capacity = entry["used_mbps"], entry["capacity_mbps"]
+            bar_width = 22
+            filled = 0 if capacity <= 0 else min(bar_width, round(bar_width * used / capacity))
+            bar = "█" * filled + dim("·" * (bar_width - filled))
+            flag = red("  DOWN") if entry["down"] else ""
+            self.say(f"{link_id:<9} {bar} {used:>5.1f}/{capacity:<5.1f} Mbps"
+                     f"  residual {entry['residual_mbps']:>5.1f}{flag}")
+
+    def show_flows(self, only_active: bool = True) -> None:
+        rows = [f for f in flows() if not only_active or f["state"] == "ACTIVE"]
+        if not rows:
+            self.say(dim("(no flows)"))
+            return
+        for f in rows:
+            state = {"ACTIVE": green, "FAILED": red}.get(f["state"], yellow)(f["state"])
+            self.say(f"{f['flow_id']:<4} {f['src']}->{f['dst']:<3} "
+                     f"{f['bandwidth_mbps']:>5.1f} Mbps  prio {f['priority']}  "
+                     f"{'-'.join(f['path']) or '—':<14} {state}")
+
+    def done(self, message: str = "") -> None:
+        print()
+        print(dim("  " + "─" * 66))
+        if message:
+            print(f"  {bold(message)}")
+        print()
+
+
+
 
 
 def reset() -> None:
