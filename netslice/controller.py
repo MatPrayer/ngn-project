@@ -205,11 +205,18 @@ class NetSliceController(app_manager.OSKenApp):
             previous = self.flow_stats.get(entry.cookie)
             moved = previous is None or entry.packet_count != previous["packets"]
             elapsed = now - previous["at"] if previous else 0.0
-            throughput = (
-                round((entry.byte_count - previous["bytes"]) * 8 / elapsed / 1e6, 3)
-                if previous and elapsed > 0
-                else 0.0
-            )
+
+
+
+
+
+            reset_counters = previous is not None and entry.byte_count < previous["bytes"]
+            if reset_counters:
+                throughput = previous["throughput_mbps"]
+            elif previous and elapsed > 0:
+                throughput = round((entry.byte_count - previous["bytes"]) * 8 / elapsed / 1e6, 3)
+            else:
+                throughput = 0.0
             self.flow_stats[entry.cookie] = {
                 "packets": entry.packet_count,
                 "bytes": entry.byte_count,
