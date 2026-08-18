@@ -170,10 +170,7 @@ class Demo:
         self._last_live = 0.0
 
         print()
-        print(bold(f"  {title}"))
-        print(dim(f"  {reference}"))
-        if description:
-            print(dim(f"  {description}"))
+        print(f"  {bold(title)}   {dim(reference)}")
         print(dim("  " + "─" * 66))
 
     # ---------------------------------------------------------- narration
@@ -187,7 +184,8 @@ class Demo:
         print(f"      {text}")
 
     def note(self, text: str) -> None:
-        """The 'why' — what the audience should take away from this step."""
+        """One short observation. The explanation is the presenter's job — the
+        script prints what happened, not an essay about why it matters."""
         print(f"      {dim(text)}")
 
     def good(self, text: str) -> None:
