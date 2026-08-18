@@ -387,8 +387,12 @@ function drawFlows(state) {
   }).join("");
 
   box.innerHTML = `<table><thead><tr>
-      <th>id</th><th>flow</th><th>path</th><th>bw</th><th>pri</th>
-      <th>now</th><th>ttl</th><th>state</th><th></th>
+      <th>id</th><th>flow</th><th>path</th>
+      <th title="reserved bandwidth in Mbps; the bar is how much of it the flow is using">reserved</th>
+      <th title="priority class — higher preempts lower">pri</th>
+      <th title="measured throughput in Mbps, from the switch flow counters">actual</th>
+      <th title="time left before the flow expires">ttl</th>
+      <th>state</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 
   box.querySelectorAll("tbody tr").forEach((tr) => {
