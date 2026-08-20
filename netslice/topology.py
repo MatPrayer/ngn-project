@@ -54,6 +54,17 @@ class Link:
         return f"{lo}{hi}"
 
     def other(self, node: str) -> str:
+        """Return the endpoint at the other end of the link.
+
+        Args:
+            node: One endpoint of the link.
+
+        Returns:
+            str: The other endpoint.
+
+        Raises:
+            KeyError: If *node* is not an endpoint of this link.
+        """
         if node == self.a:
             return self.b
         if node == self.b:
@@ -64,90 +75,221 @@ class Link:
 @dataclass
 class Topology:
     switches: List[str]
-    hosts: Dict[str, str]  # host name -> switch it attaches to
+    hosts: Dict[str, str]
     links: List[Link]
 
-    # Filled in by _assign_interfaces(): device -> list of (iface_index, link)
+
     _ifaces: Dict[str, List[Tuple[int, Link]]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
+        """Fill in derived interface-index tables after construction."""
         self._assign_interfaces()
 
-    # ------------------------------------------------------------- addressing
+
 
     def host_index(self, host: str) -> int:
+        """Return the deterministic index of a host.
+
+        Hosts are ordered alphabetically and indexed from 1.
+
+        Args:
+            host: Host name (e.g. ``"h1"``).
+
+        Returns:
+            int: 1-based index used for IP/MAC derivation.
+        """
         return sorted(self.hosts).index(host) + 1
 
     def host_ip(self, host: str) -> str:
+        """Return the IPv4 address assigned to a host.
+
+        Derived deterministically as ``SUBNET.<host_index>``.
+
+        Args:
+            host: Host name.
+
+        Returns:
+            str: e.g. ``"10.0.0.1"``.
+        """
         return f"{SUBNET}.{self.host_index(host)}"
 
     def host_mac(self, host: str) -> str:
-        """Deterministic MACs let every host be given a static ARP table, so no
-        ARP traffic ever reaches the controller and the data plane only has to
-        deal with IP flows (see FINDINGS / design notes)."""
+        """Return the deterministic MAC address of a host.
+
+        Deterministic MACs let every host be given a static ARP table, so no
+        ARP traffic ever reaches the controller.
+
+        Args:
+            host: Host name.
+
+        Returns:
+            str: MAC as ``"00:00:00:00:00:XX"``.
+        """
         return f"00:00:00:00:00:{self.host_index(host):02x}"
 
     def dpid(self, switch: str) -> int:
-        """Datapath id = switch index, so `s1` is dpid 1. Keeps controller logs
-        and `ovs-ofctl` output readable."""
+        """Return the datapath ID of a switch.
+
+        Datapath id = switch index (``s1`` → 1), keeping controller logs and
+        ``ovs-ofctl`` output readable.
+
+        Args:
+            switch: Switch name (e.g. ``"s1"``).
+
+        Returns:
+            int: The switch's datapath ID.
+        """
         return self.switches.index(switch) + 1
 
     def switch_by_dpid(self, dpid: int) -> str:
+        """Return the switch name for a datapath ID.
+
+        Args:
+            dpid: Datapath ID.
+
+        Returns:
+            str: Switch name (e.g. ``"s3"``).
+
+        Raises:
+            IndexError: If *dpid* is out of range for this topology.
+        """
         return self.switches[dpid - 1]
 
-    # ------------------------------------------------------------- interfaces
+
 
     def _assign_interfaces(self) -> None:
         """Assign each device's links to consecutive interface indexes.
 
-        Kathara names interfaces eth<index>. We additionally pin the OpenFlow
-        port number to index+1 via `ofport_request`, rather than relying on the
-        order OVS happens to add ports in.
+        Kathara names interfaces ``eth<index>``. OpenFlow port numbers are
+        pinned to ``index+1`` via ``ofport_request``.
+
+        Returns:
+            None. Populates the private ``_ifaces`` table.
+
+        Raises:
+            KeyError: If a link references an unknown device.
         """
         self._ifaces = {name: [] for name in self.switches}
         self._ifaces.update({name: [] for name in self.hosts})
         for link in self.links:
             for endpoint in (link.a, link.b):
                 if endpoint not in self._ifaces:
-                    raise KeyError(f"link {link.id} references unknown device {endpoint}")
+                    raise KeyError(
+                        f"link {link.id} references unknown device {endpoint}"
+                    )
                 self._ifaces[endpoint].append((len(self._ifaces[endpoint]), link))
 
     def interfaces(self, device: str) -> List[Tuple[int, Link]]:
+        """Return the ``(iface_index, link)`` pairs for a device.
+
+        Args:
+            device: Switch or host name.
+
+        Returns:
+            list[tuple[int, Link]]: Interface index and Link for each
+            connection of the device.
+        """
         return self._ifaces[device]
 
     def ofport(self, switch: str, link: Link) -> int:
+        """Return the OpenFlow port number of a link on a switch.
+
+        Args:
+            switch: Switch name.
+            link: The link to look up.
+
+        Returns:
+            int: OpenFlow port number (interface index + 1).
+
+        Raises:
+            KeyError: If the switch has no interface on that link.
+        """
         for index, candidate in self._ifaces[switch]:
             if candidate.id == link.id:
                 return index + 1
         raise KeyError(f"{switch} has no interface on {link.id}")
 
     def port_to_link(self, switch: str) -> Dict[int, str]:
-        """OpenFlow port number -> link id. This is what lets the controller
-        turn an OFPT_PORT_STATUS into the set of affected flows."""
+        """Map OpenFlow port numbers to link IDs on a switch.
+
+        This is what lets the controller turn an ``OFPT_PORT_STATUS`` into
+        the set of affected flows.
+
+        Args:
+            switch: Switch name.
+
+        Returns:
+            dict[int, str]: OpenFlow port → link ID.
+        """
         return {index + 1: link.id for index, link in self._ifaces[switch]}
 
     def link_by_id(self, link_id: str) -> Link:
+        """Find a link by its endpoint-order-independent ID.
+
+        Args:
+            link_id: Link identifier (e.g. ``"s1--s2"``).
+
+        Returns:
+            Link: The matching link.
+
+        Raises:
+            KeyError: If no link has that ID.
+        """
         for link in self.links:
             if link.id == link_id:
                 return link
         raise KeyError(link_id)
 
     def neighbours(self, switch: str) -> Iterable[Tuple[str, Link]]:
+        """Yield neighbouring switches and the links to them.
+
+        Access links are excluded, only switch-to-switch neighbours are
+        yielded.
+
+        Args:
+            switch: Switch name.
+
+        Yields:
+            tuple[str, Link]: A neighbouring switch and the core link to it.
+        """
         for _, link in self._ifaces[switch]:
             other = link.other(switch)
             if other in self.switches:
                 yield other, link
 
     def core_links(self) -> List[Link]:
-        """Switch-to-switch links: the ones that carry reservable capacity."""
+        """Return switch-to-switch links (the ones with reservable capacity).
+
+        Returns:
+            list[Link]: Links whose endpoints are both switches.
+        """
         return [l for l in self.links if l.a in self.switches and l.b in self.switches]
 
     def access_link(self, host: str) -> Link:
+        """Return the access link a host attaches to the network with.
+
+        Args:
+            host: Host name.
+
+        Returns:
+            Link: The host's access link (host to switch).
+        """
         return self._ifaces[host][0][1]
 
     # ------------------------------------------------------------ startup gen
 
     def _switch_startup(self, switch: str) -> str:
+        """Generate the startup script for a switch container.
+
+        Sets up OVS, adds each interface with a pinned ``ofport_request``,
+        applies ``tc`` shaping, and points the bridge at the controller.
+
+        Args:
+            switch: Switch name.
+
+        Returns:
+            str: Shell script as a string.
+        """
         lines = [
             "/usr/share/openvswitch/scripts/ovs-ctl start --system-id=random --no-mlockall",
             "",
@@ -165,13 +307,26 @@ class Topology:
             iface = f"eth{index}"
             ofport = index + 1
             lines.append(f"ip link set {iface} up")
-            lines.append(f"ovs-vsctl add-port br0 {iface} -- set Interface {iface} ofport_request={ofport}")
+            lines.append(
+                f"ovs-vsctl add-port br0 {iface} -- set Interface {iface} ofport_request={ofport}"
+            )
             lines.append(self._tc_command(iface, link.capacity_mbps))
             lines.append("")
         lines.append(f"ovs-vsctl set-controller br0 tcp:$GW:{OF_PORT}")
         return "\n".join(lines) + "\n"
 
     def _host_startup(self, host: str) -> str:
+        """Generate the startup script for a host container.
+
+        Assigns the host's IP, applies ``tc`` shaping, and installs static
+        ARP for every peer so no ARP traffic reaches the data plane.
+
+        Args:
+            host: Host name.
+
+        Returns:
+            str: Shell script as a string.
+        """
         ip = self.host_ip(host)
         lines = [
             "ip link set eth0 up",
@@ -192,9 +347,19 @@ class Topology:
 
     @staticmethod
     def _tc_command(iface: str, capacity_mbps: float) -> str:
-        """HTB with equal rate and ceil, so the interface cannot borrow beyond
-        its configured capacity. Applied per interface; because every link has
-        the discipline on both ends, capacity is symmetric."""
+        """Build the ``tc`` HTB command that shapes one interface.
+
+        Uses equal rate and ceil so the interface cannot borrow beyond its
+        configured capacity. Because every link applies the discipline on
+        both ends, shaping is symmetric.
+
+        Args:
+            iface: Network interface name (e.g. ``"eth0"``).
+            capacity_mbps: Shaped capacity in Mbps.
+
+        Returns:
+            str: Shell command to (re)place the root HTB qdisc.
+        """
         rate = f"{capacity_mbps:g}mbit"
         return (
             f"tc qdisc replace dev {iface} root handle 1: htb default 1 && "
@@ -205,6 +370,14 @@ class Topology:
     # ------------------------------------------------------------------- lab
 
     def build_lab(self) -> Lab:
+        """Construct a Kathara Lab object representing this topology.
+
+        Creates machines for each switch and host, connects them to links
+        in interface order, and attaches the generated startup files.
+
+        Returns:
+            Lab: A Kathara lab, ready to deploy.
+        """
         lab = Lab(LAB_NAME)
 
         for switch in self.switches:
@@ -221,17 +394,29 @@ class Topology:
                 )
 
         for switch in self.switches:
-            lab.create_file_from_string(self._switch_startup(switch), f"{switch}.startup")
+            lab.create_file_from_string(
+                self._switch_startup(switch), f"{switch}.startup"
+            )
         for host in self.hosts:
             lab.create_file_from_string(self._host_startup(host), f"{host}.startup")
 
         return lab
 
-    # ----------------------------------------------------------- serialisation
+
 
     def to_dict(self) -> dict:
+        """Serialize the topology to a JSON-safe dictionary.
+
+        Returns:
+            dict: Keys ``switches`` (name → dpid + ports), ``hosts``
+            (name → switch, IP, MAC, ofport), and ``links`` (list of link
+            dicts).
+        """
         return {
-            "switches": {s: {"dpid": self.dpid(s), "ports": self.port_to_link(s)} for s in self.switches},
+            "switches": {
+                s: {"dpid": self.dpid(s), "ports": self.port_to_link(s)}
+                for s in self.switches
+            },
             "hosts": {
                 h: {
                     "switch": sw,
@@ -248,48 +433,44 @@ class Topology:
         }
 
     def to_json(self, indent: int = 2) -> str:
+        """Serialize the topology as a JSON string.
+
+        Args:
+            indent: JSON indentation. Defaults to 2.
+
+        Returns:
+            str: The topology as formatted JSON.
+        """
         return json.dumps(self.to_dict(), indent=indent)
 
 
 def default_topology() -> Topology:
-    """Six-switch ring with three chords, one host per switch.
+    """Build the default six-switch ring with three chords and six hosts.
 
-    Capacities are chosen so that the shortest path and the widest path
-    disagree for several host pairs -- otherwise the widest-path-vs-shortest-
-    path experiment has nothing to show.
+    Capacities are tuned so shortest and widest path disagree for several
+    host pairs, giving the experiment something to show.
 
-    Worked example, h1 (on s1) -> h4 (on s4):
-      shortest : s1-s4 chord, 1 hop, bottleneck  4 Mbps
-      widest   : s1-s2-s3-s4, 3 hops, bottleneck 10 Mbps
-
-                     s1 ------10------ s2
-                    /  \                | \
-                   /    \4              |  \20
-                 10      \              10   \
-                 /        \             |     \
-                s6         +--- s4 ---10+      s5
-                 \        /      |             /
-                  \      10      +-----10-----+
-                   6    /
-                    \  /
-                     s3
+    Returns:
+        Topology: The default topology.
     """
     links = [
-        # Ring
+
         Link("s1", "s2", 10),
         Link("s2", "s3", 10),
         Link("s3", "s4", 10),
         Link("s4", "s5", 10),
         Link("s5", "s6", 10),
         Link("s6", "s1", 10),
-        # Chords: one deliberately narrow, one wide, one middling.
+
         Link("s1", "s4", 4),
         Link("s2", "s5", 20),
         Link("s3", "s6", 6),
     ]
     switches = [f"s{i}" for i in range(1, 7)]
     hosts = {f"h{i}": f"s{i}" for i in range(1, 7)}
-    links += [Link(host, switch, ACCESS_CAPACITY_MBPS) for host, switch in hosts.items()]
+    links += [
+        Link(host, switch, ACCESS_CAPACITY_MBPS) for host, switch in hosts.items()
+    ]
     return Topology(switches=switches, hosts=hosts, links=links)
 
 
@@ -297,6 +478,14 @@ def default_topology() -> Topology:
 
 
 def deploy(topology: Optional[Topology] = None) -> Tuple[Topology, Lab]:
+    """Build and deploy the Kathara lab for a topology.
+
+    Args:
+        topology: Topology to deploy. Defaults to the default topology.
+
+    Returns:
+        tuple[Topology, Lab]: The topology and the deployed Lab object.
+    """
     topology = topology or default_topology()
     lab = topology.build_lab()
     Kathara.get_instance().deploy_lab(lab)
@@ -304,36 +493,53 @@ def deploy(topology: Optional[Topology] = None) -> Tuple[Topology, Lab]:
 
 
 def undeploy() -> None:
+    """Tear down the running Kathara lab."""
     Kathara.get_instance().undeploy_lab(lab_name=LAB_NAME)
 
 
 def running_machines() -> List[str]:
-    """Names of the lab's containers that are currently up, or [] if none are.
+    """Return the names of the lab's containers currently up.
 
-    Used by `status` and by the deploy guard: deploying on top of a running lab
-    is not an error, but it is almost never what was meant.
+    Args:
+        None.
+
+    Returns:
+        list[str]: Device names (e.g. ``["h1", "s1"]``), or ``[]`` if the
+        lab is not deployed or no runtime is available.
     """
     try:
         containers = Kathara.get_instance().get_machines_api_objects(lab_name=LAB_NAME)
-    except Exception:  # noqa: BLE001 - no lab, or no container runtime at all
+    except Exception:
         return []
-    # Container names are kathara_<user>_<device>_<hash>; report the device.
+
     devices = set(default_topology().switches) | set(default_topology().hosts)
     return sorted(
-        {device for api in containers for device in devices if f"_{device}_" in api.name}
+        {
+            device
+            for api in containers
+            for device in devices
+            if f"_{device}_" in api.name
+        }
     )
 
 
 def set_link(a: str, b: str, up: bool) -> Tuple[str, int]:
     """Bring one end of a core link administratively up or down.
 
-    Returns (switch, interface index) so the caller can say what it did.
+    Args:
+        a: Switch whose interface is touched, the one that notifies the
+            controller.
+        b: Switch at the other end.
+        up: ``True`` to bring the link up, ``False`` to bring it down.
 
-    The end matters. Under the Docker manager a collision domain is a Linux
-    bridge, not a veth pair, so downing an interface drops carrier only on that
-    container's side — **only the switch named first will notify the
-    controller** (`spike/FINDINGS.md` check A). One notification is enough: the
-    controller knows the topology and treats it as the whole link being down.
+    Returns:
+        tuple[str, int]: ``(switch, interface index)`` so the caller can
+        report what was done.
+
+    Raises:
+        ValueError: If the link is an access link (host failures are out
+            of scope).
+        KeyError: If the link does not exist.
     """
     topology = default_topology()
     lo, hi = sorted((a, b))
@@ -341,21 +547,30 @@ def set_link(a: str, b: str, up: bool) -> Tuple[str, int]:
     if link.a in topology.hosts or link.b in topology.hosts:
         raise ValueError(f"{link.id} is an access link; host failures are out of scope")
 
-    index = next(i for i, candidate in topology.interfaces(a) if candidate.id == link.id)
+    index = next(
+        i for i, candidate in topology.interfaces(a) if candidate.id == link.id
+    )
     state = "up" if up else "down"
     Kathara.get_instance().exec(
-        a, ["sh", "-c", f"ip link set eth{index} {state}"], lab_name=LAB_NAME, stream=False
+        a,
+        ["sh", "-c", f"ip link set eth{index} {state}"],
+        lab_name=LAB_NAME,
+        stream=False,
     )
     return a, index
 
 
 def main(argv=None) -> int:
-    """Lab lifecycle and demo controls.
+    """Lab lifecycle and demo controls (CLI entry point).
 
-    The lab and the controller are separate lifetimes: the controller can run
-    with no lab (it just has no switches), and the lab can run with no
-    controller (secure fail mode means it forwards nothing). Both have to be up
-    for anything to work, which is exactly the thing that is easy to forget.
+    Handles ``deploy``, ``undeploy``, ``status``, ``json``, ``links``,
+    ``link-down``, and ``link-up`` subcommands.
+
+    Args:
+        argv: Optional command-line arguments. Defaults to ``sys.argv[1:]``.
+
+    Returns:
+        int: Process exit code (0 for success, 1 for errors).
     """
     import argparse
 
@@ -368,8 +583,12 @@ def main(argv=None) -> int:
     sub.add_parser("links", help="per-switch interface map: which ethN is which link")
 
     for name, verb in (("link-down", "Fail"), ("link-up", "Restore")):
-        p = sub.add_parser(name, help=f"{verb.lower()} a core link, for the rerouting demo")
-        p.add_argument("a", help="switch whose interface is touched — the one that notifies")
+        p = sub.add_parser(
+            name, help=f"{verb.lower()} a core link, for the rerouting demo"
+        )
+        p.add_argument(
+            "a", help="switch whose interface is touched — the one that notifies"
+        )
         p.add_argument("b", help="switch at the other end")
 
     args = parser.parse_args(argv)
@@ -400,12 +619,18 @@ def main(argv=None) -> int:
         lo, hi = sorted((args.a, args.b))
         if args.action == "link-down":
             print(f"{lo}--{hi} down  ({switch} eth{index})")
-            print(f"  only {switch} reports it — the far end never notices "
-                  f"(collision domains are Linux bridges, not veth pairs)")
-            print(f"  restore with:  python -m netslice.topology link-up {args.a} {args.b}")
+            print(
+                f"  only {switch} reports it, the far end never notices "
+                f"(collision domains are Linux bridges, not veth pairs)"
+            )
+            print(
+                f"  restore with:  python -m netslice.topology link-up {args.a} {args.b}"
+            )
         else:
             print(f"{lo}--{hi} up  ({switch} eth{index})")
-            print("  FAILED flows are retried; flows already rerouted stay where they are")
+            print(
+                "  FAILED flows are retried; flows already rerouted stay where they are"
+            )
         return 0
 
     if args.action == "status":
@@ -426,13 +651,17 @@ def main(argv=None) -> int:
     already = running_machines()
     if already:
         print(f"lab '{LAB_NAME}' is already deployed ({len(already)} containers).")
-        print("  redeploy with:  python -m netslice.topology undeploy && "
-              "python -m netslice.topology deploy")
+        print(
+            "  redeploy with:  python -m netslice.topology undeploy && "
+            "python -m netslice.topology deploy"
+        )
         return 1
 
     deploy(topology)
-    print(f"lab '{LAB_NAME}' deployed: {len(topology.switches)} switches, "
-          f"{len(topology.hosts)} hosts")
+    print(
+        f"lab '{LAB_NAME}' deployed: {len(topology.switches)} switches, "
+        f"{len(topology.hosts)} hosts"
+    )
     print("  switches take ~15 s to run their startup scripts and connect")
     return 0
 

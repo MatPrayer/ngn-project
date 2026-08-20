@@ -94,19 +94,44 @@ class FlowEntry:
 
     @property
     def ingress(self) -> Optional[str]:
+        """First switch on the path (where the flow enters the core)."""
         return self.path[0] if self.path else None
 
     @property
     def egress(self) -> Optional[str]:
+        """Last switch on the path (where the flow leaves the core)."""
         return self.path[-1] if self.path else None
 
     def holds_capacity(self) -> bool:
+        """Check whether this flow currently occupies link capacity.
+
+        Returns:
+            bool: ``True`` if the flow is in the :attr:`ACTIVE` state.
+        """
         return self.state is FlowState.ACTIVE
 
     def in_hold_down(self, now: Optional[float] = None) -> bool:
+        """Check whether this flow is inside its hold-down immunity window.
+
+        A recently rerouted flow is immune from preemption for
+        :data:`HOLD_DOWN_SEC` seconds to prevent oscillation.
+
+        Args:
+            now: Current time (seconds). Defaults to :func:`time.time`.
+
+        Returns:
+            bool: ``True`` if the hold-down window has not yet expired.
+        """
         return (now if now is not None else time.time()) < self.hold_down_until
 
     def to_dict(self) -> dict:
+        """Serialize the flow entry to a JSON-safe dictionary.
+
+        Returns:
+            dict: All flow fields including ``flow_id``, ``src``, ``dst``,
+            ``bandwidth_mbps``, ``priority``, ``path``, ``links``,
+            ``state``, ``reroutes``, and ``age_sec``.
+        """
         return {
             "flow_id": self.flow_id,
             "src": self.src,
@@ -135,6 +160,13 @@ class NetworkState:
     """
 
     def __init__(self, topology: Topology, hold_down_sec: float = HOLD_DOWN_SEC):
+        """Initialise the residual-capacity graph and flow table.
+
+        Args:
+            topology: Network topology defining switches, hosts, and links.
+            hold_down_sec: Seconds a rerouted flow is immune from
+                preemption. Defaults to :data:`HOLD_DOWN_SEC` (5.0).
+        """
         self.topology = topology
         self.hold_down_sec = hold_down_sec
 
@@ -166,7 +198,23 @@ class NetworkState:
         policy: str = "widest",
         tie_break: str = "fewest",
     ) -> FlowEntry:
-        """Mint an unplaced flow. It holds no capacity until reserve()."""
+        """Mint an unplaced flow entry. It holds no capacity until reserved.
+
+        Args:
+            src: Source host name (e.g. ``"h1"``).
+            dst: Destination host name (e.g. ``"h4"``).
+            bandwidth_mbps: Requested bandwidth in Mbps.
+            priority: Flow priority (higher = more important).
+            idle_timeout: Seconds of inactivity before the switch expires
+                the flow entry. Defaults to 30.
+            hard_timeout: Maximum lifetime in seconds. 0 means no limit.
+            ip_proto: IP protocol number. Defaults to TCP (6).
+            policy: Routing policy used for admission and rerouting.
+            tie_break: Victim-selection tie-break strategy.
+
+        Returns:
+            FlowEntry: A new flow in :attr:`FAILED` state (unplaced).
+        """
         number = next(self._counter)
         return FlowEntry(
             flow_id=f"f{number}",
@@ -187,15 +235,23 @@ class NetworkState:
     def reserve(
         self, flow: FlowEntry, path: Sequence[str], links: Sequence[str], force: bool = False
     ) -> None:
-        """Charge `flow` to every link of `path`. The only place residual shrinks.
+        """Charge *flow* to every link along *path*. The only place residual shrinks.
 
-        Raises InsufficientCapacity and changes nothing if any link is short,
-        so a failed reservation can never leave capacity half-consumed.
+        Atomically checks all links before committing. If any link is short
+        (and *force* is ``False``), raises :exc:`InsufficientCapacity` and
+        changes nothing.
 
-        `force` bypasses the check and lets residual go negative. That is the
-        "without admission control" arm of the baseline experiment, where
-        every request is accepted regardless of network state; the negative
-        residual is exactly the overbooking the plots are meant to show.
+        Args:
+            flow: The flow entry to place.
+            path: Ordered sequence of switch names (ingress first).
+            links: Core link IDs the reservation is charged to.
+            force: If ``True``, bypass the capacity check and let residual
+                go negative.
+
+        Raises:
+            InsufficientCapacity: If any link lacks the required bandwidth
+                and *force* is ``False``.
+            RuntimeError: If the flow is already placed.
         """
         if flow.holds_capacity() and flow.links:
             raise RuntimeError(f"{flow.flow_id} is already placed; release it first")
@@ -221,11 +277,20 @@ class NetworkState:
         self.flows[flow.flow_id] = flow
 
     def release(self, flow_id: str, new_state: FlowState) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-        """Give the flow's capacity back and move it out of ACTIVE.
+        """Give the flow's capacity back and move it out of ``ACTIVE``.
 
-        Returns the (path, links) it was occupying, which the caller needs in
-        order to delete the right flow entries — and, for make-before-break,
-        to know which switches the new path does *not* reuse.
+        Returns the former ``(path, links)`` so the caller can delete the
+        right flow entries and (for make-before-break) know which switches
+        the new path does *not* reuse.
+
+        Args:
+            flow_id: Identifier of the flow to release.
+            new_state: State to transition the flow into (e.g.
+                ``EXPIRED``, ``PREEMPTED``, ``REMOVED``).
+
+        Returns:
+            Tuple: ``(old_path, old_links)``, the switch sequence and
+            core link IDs the flow was occupying.
         """
         flow = self.flows[flow_id]
         old_path, old_links = flow.path, flow.links
@@ -244,7 +309,14 @@ class NetworkState:
         return old_path, old_links
 
     def forget(self, flow_id: str) -> None:
-        """Drop a terminal flow from the table. Refuses to drop a live one."""
+        """Drop a terminal flow from the table.
+
+        Args:
+            flow_id: Identifier of the flow to remove.
+
+        Raises:
+            RuntimeError: If the flow still holds capacity (is ACTIVE).
+        """
         flow = self.flows.get(flow_id)
         if flow is None:
             return
@@ -253,29 +325,58 @@ class NetworkState:
         del self.flows[flow_id]
 
     def mark_hold_down(self, flow_id: str, now: Optional[float] = None) -> None:
+        """Start the hold-down immunity window for a rerouted flow.
+
+        Args:
+            flow_id: Identifier of the flow to protect.
+            now: Current time (seconds). Defaults to :func:`time.time`.
+        """
         now = now if now is not None else time.time()
         self.flows[flow_id].hold_down_until = now + self.hold_down_sec
 
-    # ------------------------------------------------------------- capacities
+
 
     def available(self, link_id: str) -> float:
-        """Residual capacity usable *right now*: zero for a link that is down."""
+        """Residual capacity usable *right now*: zero for a down link.
+
+        Args:
+            link_id: Core link identifier (e.g. ``"s1--s2"``).
+
+        Returns:
+            float: Available bandwidth in Mbps.
+        """
         if link_id in self.down_links:
             return 0.0
         return self.residual.get(link_id, 0.0)
 
     def flows_on(self, link_id: str) -> List[FlowEntry]:
+        """Return the flows currently charged to a link.
+
+        Args:
+            link_id: Core link identifier.
+
+        Returns:
+            list[FlowEntry]: All flow entries whose reservation includes
+            this link.
+        """
         return [self.flows[f] for f in self.link_flows.get(link_id, ())]
 
     def preemptable_capacity(
         self, link_id: str, priority: int, now: Optional[float] = None
     ) -> float:
-        """Preemption, phase 1:
+        """Compute the total capacity that could be freed on a link.
 
-            preemptable(l) = residual(l) + Σ bw(f) for f on l with priority(f) < p
+        Equals ``residual(l) + Σ bw(f)`` for flows *f* on *link_id* with
+        ``priority(f) < priority`` and *f* not in hold-down.
 
-        Flows inside their hold-down window are excluded, so the path search
-        never counts on capacity that phase 2 is not allowed to take.
+        Args:
+            link_id: Core link identifier.
+            priority: Threshold priority, only flows strictly below this
+                count as preemptable.
+            now: Current time (seconds). Defaults to :func:`time.time`.
+
+        Returns:
+            float: Total reclaimable bandwidth in Mbps.
         """
         if link_id in self.down_links:
             return 0.0
@@ -295,22 +396,32 @@ class NetworkState:
         exclude: Optional[Set[str]] = None,
         now: Optional[float] = None,
     ) -> Optional[List[FlowEntry]]:
-        """Preemption, phase 2: who to sacrifice on this link.
+        """Select which flows to preempt on a link to cover a bandwidth deficit.
 
-        Covers the deficit `b - residual(l)`, or returns None if it cannot be
-        covered. Two orderings, both specified, selectable so the report can
-        compare them:
+        Phase 2 of the preemption algorithm. Returns the list of
+        flows whose eviction frees enough capacity, or ``None`` if the
+        deficit cannot be covered.
 
-        "fewest"   ascending priority, then descending bandwidth — sacrifice
-                   the least important flows, and among equals the fattest, so
-                   the *number* of interrupted flows is minimised.
-        "best_fit" ascending priority, then the smallest single flow that
-                   covers the deficit if one exists — minimises *wasted*
-                   bandwidth instead.
+        Two orderings:
+            - ``"fewest"``: ascending priority, then descending bandwidth,
+              minimise the number of interrupted flows.
+            - ``"best_fit"``: ascending priority, then smallest single flow
+              that covers the deficit, minimise wasted bandwidth.
 
-        `exclude` holds flows already sacrificed elsewhere on the same path;
-        their capacity has been credited into `bandwidth_mbps` by the caller,
-        so counting them again would double-book the same victim.
+        Args:
+            link_id: Core link identifier.
+            bandwidth_mbps: Required bandwidth on this link.
+            priority: Threshold priority, only flows strictly below this
+                are candidates.
+            tie_break: Victim-selection strategy (``"fewest"`` or
+                ``"best_fit"``).
+            exclude: Flow IDs already chosen on earlier links (to avoid
+                double-counting).
+            now: Current time (seconds). Defaults to :func:`time.time`.
+
+        Returns:
+            list[FlowEntry] or None: The chosen victims, or ``None`` if the
+            deficit is unsatisfiable.
         """
         exclude = exclude or set()
         deficit = bandwidth_mbps - self.available(link_id)
@@ -350,9 +461,15 @@ class NetworkState:
     def set_link_down(self, link_id: str) -> List[FlowEntry]:
         """Mark a link unusable and return the flows crossing it, worst first.
 
-        Ordered by descending priority, because rerouting takes
-        affected flows in that order, so important flows get first claim on
-        what capacity is left.
+        Flows are ordered by descending priority then descending bandwidth
+        so important flows get first claim on the remaining capacity during
+        rerouting.
+
+        Args:
+            link_id: Core link identifier.
+
+        Returns:
+            list[FlowEntry]: Affected flows, highest priority first.
         """
         self.down_links.add(link_id)
         affected = self.flows_on(link_id)
@@ -360,14 +477,31 @@ class NetworkState:
         return affected
 
     def set_link_up(self, link_id: str) -> None:
+        """Restore a link to usable status.
+
+        Args:
+            link_id: Core link identifier.
+        """
         self.down_links.discard(link_id)
 
-    # -------------------------------------------------------------- reporting
+
 
     def active_flows(self) -> List[FlowEntry]:
+        """Return all flows that are currently holding capacity.
+
+        Returns:
+            list[FlowEntry]: Flows in the :attr:`ACTIVE` state.
+        """
         return [f for f in self.flows.values() if f.holds_capacity()]
 
     def utilisation(self) -> Dict[str, dict]:
+        """Report per-link capacity, residual, usage, and membership.
+
+        Returns:
+            dict: Mapping of link ID to a dict with keys
+            ``capacity_mbps``, ``residual_mbps``, ``used_mbps``, ``down``,
+            and ``flows`` (sorted flow IDs).
+        """
         return {
             link_id: {
                 "capacity_mbps": capacity,
@@ -380,6 +514,13 @@ class NetworkState:
         }
 
     def snapshot(self) -> dict:
+        """Return a full serializable snapshot of flows and links.
+
+        Returns:
+            dict: ``{"flows": [...], "links": {...}}`` combining
+            :meth:`active_flows`-style dictionaries and
+            :meth:`utilisation`.
+        """
         return {
             "flows": [f.to_dict() for f in self.flows.values()],
             "links": self.utilisation(),

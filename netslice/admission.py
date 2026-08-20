@@ -35,6 +35,12 @@ class Decision:
     reason: str = ""
 
     def to_dict(self) -> dict:
+        """Serialize the decision to a JSON-safe dictionary.
+
+        Returns:
+            dict: A dictionary with keys ``accepted``, ``path`` (or None),
+            ``victims``, ``preemption_used``, ``forced``, and ``reason``.
+        """
         return {
             "accepted": self.accepted,
             "path": self.path.to_dict() if self.path else None,
@@ -58,16 +64,44 @@ def evaluate(
     admission_control: bool = True,
     now: Optional[float] = None,
 ) -> Decision:
-    """Plan the placement of one request. Pure: `state` is not modified."""
+    """Plan the placement of one flow request without mutating state.
+
+    Searches for a path using the chosen policy, then (if preemption is
+    allowed) tries to free enough capacity by evicting lower-priority flows.
+
+    Args:
+        state: Current network state (flow table and residual capacities).
+            Not modified by this function.
+        adj: Switch-only adjacency list built by :func:`netslice.routing.adjacency`.
+        src_switch: Ingress switch name (e.g. ``"s1"``).
+        dst_switch: Egress switch name (e.g. ``"s4"``).
+        bandwidth_mbps: Requested bandwidth in Mbps.
+        priority: Flow priority (higher = more important).
+        policy: Routing policy, ``"widest"`` (max-bottleneck) or
+            ``"shortest"`` (fewest-hop).
+        allow_preemption: If ``True``, the search considers evicting
+            lower-priority flows when free capacity is insufficient.
+        tie_break: Victim-selection tie-break, ``"fewest"`` (minimise
+            interrupted flows) or ``"best_fit"`` (minimise wasted
+            bandwidth).
+        admission_control: If ``False``, every request is accepted on
+            nominal capacity regardless of reservations ( baseline).
+        now: Current monotonic time (seconds). Used to check hold-down
+            windows. Defaults to :func:`time.time`.
+
+    Returns:
+        Decision: Accepted or rejected, with the chosen path, any victims
+        to preempt, and a human-readable reason string.
+    """
 
     if src_switch == dst_switch:
-        # Same switch: no core link is crossed, so nothing is reserved and the
-        # request is trivially admissible.
+
+
         return Decision(True, Path((src_switch,), (), float("inf")), reason="same switch")
 
     if not admission_control:
-        # Route over nominal link capacity and ignore what is already
-        # reserved — the deliberately naive baseline.
+
+
         path = routing.find_path(
             policy, adj, src_switch, dst_switch,
             width=lambda link_id: 0.0 if link_id in state.down_links else state.capacity[link_id],

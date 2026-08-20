@@ -69,12 +69,35 @@ class Router:
     """Enough routing for a dozen endpoints, and no more."""
 
     def __init__(self):
+        """Initialise an empty route table.
+
+        Args:
+            None.
+        """
         self.routes: List[Tuple[str, re.Pattern, Callable]] = []
 
     def add(self, method: str, pattern: str, handler: Callable) -> None:
+        """Register a new route.
+
+        Args:
+            method: HTTP method (e.g. ``"GET"``, ``"POST"``).
+            pattern: Path regex (anchored by ``^`` and ``$``).
+            handler: Callable ``handler(environ, start_response, *groups)``.
+        """
         self.routes.append((method, re.compile(f"^{pattern}$"), handler))
 
     def match(self, method: str, path: str):
+        """Match an HTTP request to a registered handler.
+
+        Args:
+            method: HTTP method.
+            path: Request path.
+
+        Returns:
+            tuple[Optional[Callable], tuple]: ``(handler, capture_groups)``, or
+            ``(None, ("405",))`` for a method mismatch, or ``(None, ("404",))``
+            for no match.
+        """
         allowed = False
         for route_method, pattern, handler in self.routes:
             found = pattern.match(path)
@@ -88,6 +111,16 @@ class Router:
 
 
 def _json_response(start_response, payload, status="200 OK"):
+    """Serialise a payload as a JSON HTTP response.
+
+    Args:
+        start_response: The WSGI ``start_response`` callable.
+        payload: Object to JSON-serialise.
+        status: HTTP status line. Defaults to ``"200 OK"``.
+
+    Returns:
+        list[bytes]: The response body as a single JSON byte string.
+    """
     body = json.dumps(payload, default=str).encode()
     start_response(status, [
         ("Content-Type", "application/json"),
@@ -101,6 +134,14 @@ def _json_response(start_response, payload, status="200 OK"):
 
 
 def _read_body(environ) -> dict:
+    """Read and parse the JSON body of a request.
+
+    Args:
+        environ: The WSGI environment dict.
+
+    Returns:
+        dict: Parsed JSON body, or ``{}`` if empty/malformed.
+    """
     try:
         length = int(environ.get("CONTENT_LENGTH") or 0)
     except ValueError:
@@ -118,10 +159,16 @@ def _read_body(environ) -> dict:
 def _clean_flow_request(body: dict) -> Tuple[Optional[dict], Optional[str]]:
     """Coerce and validate a flow request before it reaches the controller.
 
-    The controller validates too — hosts exist, bandwidth positive — but it
-    expects the right *types*. A browser sends everything as strings, and
-    `bandwidth_mbps="5"` would sail past a `> 0` check and then blow up deep in
-    the reservation code.
+    The controller expects the right types; a browser sends everything as
+    strings, so this converts fields per the ``FLOW_FIELDS`` spec and rejects
+    unknown fields.
+
+    Args:
+        body: Raw JSON body of the request.
+
+    Returns:
+        tuple[Optional[dict], Optional[str]]: ``(cleaned_request, error)``.
+        On error, *request* is ``None`` and *error* is a message.
     """
     request = {}
     for key, value in body.items():
@@ -141,15 +188,24 @@ def _clean_flow_request(body: dict) -> Tuple[Optional[dict], Optional[str]]:
 
 
 def make_app(controller):
-    """Build the WSGI application around a live controller instance."""
+    """Build the WSGI application around a live controller instance.
+
+    Args:
+        controller: The running ``NetSliceController``.
+
+    Returns:
+        Callable: A WSGI application.
+    """
     router = Router()
 
     def page(environ, start_response, *_):
+        """Serve the dashboard HTML page."""
         return _static(environ, start_response, "dashboard.html")
 
     def _static(environ, start_response, name):
+        """Serve a static file, restricted to the static directory."""
         target = (STATIC / name).resolve()
-        # Serve only from the static directory, whatever the URL claims.
+
         if not str(target).startswith(str(STATIC)) or not target.is_file():
             return _json_response(start_response, {"ok": False, "reason": "not found"},
                                   "404 Not Found")
@@ -163,15 +219,19 @@ def make_app(controller):
         return [body]
 
     def static(environ, start_response, name):
+        """Serve a static file by name."""
         return _static(environ, start_response, name)
 
     def topology(environ, start_response, *_):
+        """GET /api/topology, return the static topology graph."""
         return _json_response(start_response, controller.topology_view())
 
     def state(environ, start_response, *_):
+        """GET /api/state, return a full live snapshot."""
         return _json_response(start_response, controller.snapshot())
 
     def events(environ, start_response, *_):
+        """GET /api/events, return buffered events since a sequence number."""
         query = environ.get("QUERY_STRING", "")
         since = 0
         for part in query.split("&"):
@@ -185,6 +245,7 @@ def make_app(controller):
         )
 
     def add_flow(environ, start_response, *_):
+        """POST /api/flows, clean, validate, and admit a flow request."""
         request, error = _clean_flow_request(_read_body(environ))
         if error:
             return _json_response(start_response, {"ok": False, "reason": error},
@@ -195,11 +256,13 @@ def make_app(controller):
         return _json_response(start_response, reply)
 
     def remove_flow(environ, start_response, flow_id):
+        """DELETE /api/flows/<id> — release one flow."""
         reply = controller.remove_flow(flow_id)
         return _json_response(start_response, reply,
                               "200 OK" if reply.get("ok") else "404 Not Found")
 
     def clear(environ, start_response, *_):
+        """POST /api/clear — release every flow."""
         return _json_response(start_response, controller.clear_flows())
 
     router.add("GET", "/", page)
@@ -213,6 +276,8 @@ def make_app(controller):
     router.add("POST", "/api/clear", clear)
 
     def application(environ, start_response):
+        """WSGI entry point: route the request to a handler.
+        """
         method = environ.get("REQUEST_METHOD", "GET")
         path = environ.get("PATH_INFO", "/")
         handler, groups = router.match(method, path)
@@ -245,12 +310,26 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 
 class _QuietHandler(WSGIRequestHandler):
     def log_message(self, *args):
-        # A line per poll, per second, forever, would bury the OpenFlow events
-        # that actually matter during a demo.
+        """Suppress per-request access log lines.
+
+        A line per poll, per second, forever would bury the OpenFlow events
+        that actually matter during a demo.
+
+        Args:
+            *args: Ignored log-format arguments.
+        """
         pass
 
 
 def serve(controller, addr) -> None:
+    """Serve the dashboard until the process is stopped.
+
+    Blocks forever in its own daemon thread.
+
+    Args:
+        controller: The running ``NetSliceController``.
+        addr: ``(host, port)`` tuple to bind.
+    """
     server = make_server(
         addr[0], addr[1], make_app(controller),
         server_class=_ThreadingWSGIServer, handler_class=_QuietHandler,

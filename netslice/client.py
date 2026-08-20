@@ -26,6 +26,22 @@ DEFAULT_ADDR = ("127.0.0.1", 9000)
 
 
 def send(request: dict, addr=DEFAULT_ADDR, timeout: float = 30.0) -> dict:
+    """Send one JSON command to the controller and return its reply.
+
+    Args:
+        request: The command dict (must include ``"cmd"``).
+        addr: ``(host, port)`` of the control channel. Defaults to
+            ``DEFAULT_ADDR``.
+        timeout: Socket timeout in seconds. Defaults to 30.0.
+
+    Returns:
+        dict: The controller's JSON reply.
+
+    Raises:
+        ConnectionError: If the controller closes the connection without
+            replying.
+        OSError: If the controller cannot be reached.
+    """
     with socket.create_connection(addr, timeout=timeout) as sock:
         stream = sock.makefile("rwb")
         stream.write((json.dumps(request) + "\n").encode())
@@ -37,7 +53,15 @@ def send(request: dict, addr=DEFAULT_ADDR, timeout: float = 30.0) -> dict:
 
 
 def _summarise(reply: dict) -> Optional[str]:
-    """A one-line human summary next to the JSON, for the live demo."""
+    """Build a one-line human summary next to the JSON, for the live demo.
+
+    Args:
+        reply: The controller's reply dict.
+
+    Returns:
+        str or None: A short summary line, or ``None`` if the reply does not
+        lend itself to one.
+    """
     if not reply.get("ok"):
         return f"REJECTED: {reply.get('reason', 'unknown reason')}"
     flow = reply.get("flow")
@@ -54,6 +78,13 @@ def _summarise(reply: dict) -> Optional[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line argument parser.
+
+    Returns:
+        argparse.ArgumentParser: The configured parser with ``add``,
+        ``remove``, ``clear``, ``flows``, ``links``, and ``state``
+        subcommands.
+    """
     parser = argparse.ArgumentParser(prog="netslice.client", description=__doc__)
     parser.add_argument("--host", default=DEFAULT_ADDR[0])
     parser.add_argument("--port", type=int, default=DEFAULT_ADDR[1])
@@ -87,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    """CLI entry point for the client.
+
+    Parses arguments, sends the request, and prints the raw JSON reply plus
+    an optional human summary.
+
+    Args:
+        argv: Optional argument list. Defaults to ``sys.argv[1:]``.
+
+    Returns:
+        int: 0 on success, 1 if the controller refused the request, 2 if
+        the controller is unreachable.
+    """
     args = build_parser().parse_args(argv)
     request = {"cmd": args.cmd}
 

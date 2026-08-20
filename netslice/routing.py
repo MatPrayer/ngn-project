@@ -30,9 +30,16 @@ class Path:
 
     @property
     def hops(self) -> int:
+        """Number of hops (links) in the path."""
         return len(self.links)
 
     def to_dict(self) -> dict:
+        """Serialize the path to a JSON-safe dictionary.
+
+        Returns:
+            dict: Keys ``switches``, ``links``, ``bottleneck_mbps`` (None if
+            infinite), and ``hops``.
+        """
         return {
             "switches": list(self.switches),
             "links": list(self.links),
@@ -41,12 +48,23 @@ class Path:
         }
 
     def __str__(self) -> str:
+        """Human-readable path string, e.g. ``"s1-s2-s3"``."""
         return "-".join(self.switches)
 
 
 def adjacency(topology: Topology) -> Adjacency:
-    """Switch-only adjacency. Access links are excluded: a path is a sequence
-    of switches, and the host hop is implied by the ingress/egress switch."""
+    """Build a switch-only adjacency list from a topology.
+
+    Access links (host-to-switch) are excluded: a path is a sequence of
+    switches, and the host hop is implied by the ingress/egress switch.
+
+    Args:
+        topology: The network topology.
+
+    Returns:
+        Adjacency: Mapping of switch name to list of ``(neighbour, link_id)``
+        tuples for core links only.
+    """
     adj: Adjacency = {switch: [] for switch in topology.switches}
     for link in topology.core_links():
         adj[link.a].append((link.b, link.id))
@@ -55,6 +73,18 @@ def adjacency(topology: Topology) -> Adjacency:
 
 
 def _reconstruct(prev: Dict[str, Tuple[str, str]], src: str, dst: str, bottleneck: float) -> Path:
+    """Rebuild a Path from Dijkstra's predecessor table.
+
+    Args:
+        prev: Predecessor map. Each entry ``prev[node] = (predecessor, link_id)``
+            traces one step back toward the source.
+        src: Source switch name.
+        dst: Destination switch name.
+        bottleneck: Bottleneck capacity of the reconstructed path.
+
+    Returns:
+        Path: The reconstructed path from *src* to *dst*.
+    """
     switches: List[str] = [dst]
     links: List[str] = []
     node = dst
@@ -74,16 +104,24 @@ def widest_path(
     width: WidthFn,
     minimum: float = 0.0,
 ) -> Optional[Path]:
-    """Maximum-bottleneck path from `src` to `dst`, or None if there is none.
+    """Find the maximum-bottleneck path from *src* to *dst*.
 
-    `minimum` prunes links that cannot carry the request at all, so the search
-    only ever returns an admissible path: a result is a guarantee that every
-    link on it has at least `minimum` available.
+    Dijkstra variant where the label is ``(bottleneck, hops)``, wider
+    wins, then fewer hops breaks the tie. ``minimum`` prunes links that
+    cannot carry the request, so any returned path is guaranteed admissible.
 
-    Labels are (bottleneck, hops) compared as "higher bottleneck wins, then
-    fewer hops" — the tie-break requires. The label is monotone along a
-    path (bottleneck can only shrink, hops only grow), so the usual Dijkstra
-    argument holds and the first time a node is settled it is settled optimally.
+    Args:
+        adj: Switch-only adjacency list.
+        src: Source switch name.
+        dst: Destination switch name.
+        width: Function mapping a link ID to its usable capacity (Mbps).
+            May be ``residual()``, ``preemptable_capacity()``, or
+            ``capacity`` depending on the phase.
+        minimum: Minimum bandwidth a link must have to be considered.
+
+    Returns:
+        Path or None: The widest path, or ``None`` if no admissible path
+        exists.
     """
     if src not in adj or dst not in adj:
         return None
@@ -130,12 +168,22 @@ def shortest_path(
     width: WidthFn,
     minimum: float = 0.0,
 ) -> Optional[Path]:
-    """Fewest-hop admissible path, tie-broken on widest bottleneck.
+    """Find the fewest-hop admissible path, tie-broken on widest bottleneck.
 
-    The baseline policy for the comparison. It is still capacity-aware —
-    links that cannot carry the request are pruned exactly as in widest_path —
-    so the experiment isolates the effect of the *metric*, not of admission
-    control being switched off.
+    The baseline policy for the comparison. Still capacity-aware,
+    links below *minimum* are pruned, so the experiment isolates the effect
+    of the metric, not of admission control being switched off.
+
+    Args:
+        adj: Switch-only adjacency list.
+        src: Source switch name.
+        dst: Destination switch name.
+        width: Function mapping a link ID to its usable capacity (Mbps).
+        minimum: Minimum bandwidth a link must have to be considered.
+
+    Returns:
+        Path or None: The shortest admissible path, or ``None`` if none
+        exists.
     """
     if src not in adj or dst not in adj:
         return None
@@ -185,6 +233,23 @@ def find_path(
     width: WidthFn,
     minimum: float = 0.0,
 ) -> Optional[Path]:
+    """Dispatch to the routing algorithm selected by *policy*.
+
+    Args:
+        policy: ``"widest"`` for max-bottleneck, ``"shortest"`` for
+            fewest-hop.
+        adj: Switch-only adjacency list.
+        src: Source switch name.
+        dst: Destination switch name.
+        width: Function mapping a link ID to its usable capacity (Mbps).
+        minimum: Minimum bandwidth a link must have to be considered.
+
+    Returns:
+        Path or None: The chosen path, or ``None`` if unreachable.
+
+    Raises:
+        ValueError: If *policy* is not a known policy name.
+    """
     try:
         algorithm = POLICIES[policy]
     except KeyError:
