@@ -55,7 +55,28 @@
   /* Topology takes what is left after the event log; the log keeps a floor so
      it stays useful, and a ceiling so it never crowds out the map. */
   #topology { flex: 1 1 auto; }
-  #topology .body { flex: 1; display: flex; min-height: 0; padding: 8px; }
+  #topology .body { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 8px; }
+
+  /* A link can be full (every Mbps reserved) or overbooked (more reserved than
+     it physically has, which only happens with admission control switched off).
+     Both would otherwise be plain red, and on a projector they must not look
+     the same, so overbooked links get hazard stripes over the red. */
+  .link.over { animation: march 0.6s linear infinite; }
+  @keyframes march { to { stroke-dashoffset: -14; } }
+  .llabel.over { fill: #f0b72f; font-weight: 700; }
+
+  .legend { flex: 0 0 auto; display: flex; gap: 14px; flex-wrap: wrap;
+            padding: 8px 4px 0; font-size: 10.5px; color: var(--dim); }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .legend i { display: inline-block; width: 17px; height: 3px; border-radius: 2px; }
+  .legend .l-free { background: #2d5a3d; }
+  .legend .l-ok { background: #3fb950; }
+  .legend .l-busy { background: #d29922; }
+  .legend .l-full { background: #f85149; }
+  .legend .l-over { background: repeating-linear-gradient(90deg,
+                    #f85149 0 4px, #f0b72f 4px 8px); }
+  .legend .l-down { background: repeating-linear-gradient(90deg,
+                    #f85149 0 5px, transparent 5px 9px); }
   #eventpanel { flex: 0 1 auto; max-height: 34%; min-height: 108px; }
   #formpanel { flex: 0 1 auto; }
   #formpanel .body { overflow-y: auto; }
@@ -172,6 +193,15 @@
       <div class="body">
         <svg id="map" viewBox="0 0 660 560" preserveAspectRatio="xMidYMid meet"
              role="img" aria-label="network topology"></svg>
+        <div class="legend">
+          <span><i class="l-free"></i>unused</span>
+          <span><i class="l-ok"></i>&lt;50%</span>
+          <span><i class="l-busy"></i>&lt;85%</span>
+          <span><i class="l-full"></i>full</span>
+          <span><i class="l-over"></i>overbooked</span>
+          <span><i class="l-down"></i>down</span>
+          <span style="margin-left:auto">labels show residual / capacity Mbps</span>
+        </div>
       </div>
     </section>
     <section id="eventpanel">
@@ -250,6 +280,12 @@ function layout() {
 
 function isSwitch(n) { return topo.switches[n] !== undefined; }
 
+function isOverbooked(link) {
+  // A whole Mbps of tolerance would be wrong here: the point is that any
+  // negative residual is a promise the network cannot keep.
+  return link.residual_mbps < -1e-9 && !link.down;
+}
+
 function linkColour(link) {
   if (link.down) return "#f85149";
   const used = link.used_mbps / link.capacity_mbps;
@@ -320,25 +356,37 @@ function drawMap(state) {
     const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
     const a = place[link.a], b = place[link.b];
     const on = lit.has(link.id);
+    const width = on ? 6 : 2 + live.capacity_mbps / 7;
     svg.appendChild(el("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
       class: "link" + (live.down ? " down" : "") + (on ? " lit" : ""),
       stroke: linkColour(live),
-      "stroke-width": on ? 6 : 2 + live.capacity_mbps / 7,
+      "stroke-width": width,
       "data-link": link.id,
     }));
+    // Overbooked: more reserved than the link can carry, which only happens
+    // with admission control switched off. Hazard stripes over the red, so it
+    // cannot be mistaken for a link that is merely full.
+    if (isOverbooked(live)) {
+      svg.appendChild(el("line", {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        class: "link over", stroke: "#f0b72f",
+        "stroke-width": width, "stroke-dasharray": "7 7",
+      }));
+    }
   }
 
   // Labels after every line, so none of them is drawn over.
   for (const link of coreLinks) {
     const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
     const on = lit.has(link.id);
+    const over = isOverbooked(live);
     const p = labelAt[link.id];
     svg.appendChild(el("rect", {
       x: p.x - 27, y: p.y - 8, width: 54, height: 16, rx: 8, fill: "#0d1117", opacity: .9,
     }));
     svg.appendChild(el("text", {
-      x: p.x, y: p.y, class: "llabel" + (on ? " lit" : ""),
+      x: p.x, y: p.y, class: "llabel" + (on ? " lit" : "") + (over ? " over" : ""),
     }, live.down ? "DOWN" : `${(+live.residual_mbps).toFixed(1)}/${live.capacity_mbps}`));
   }
 
