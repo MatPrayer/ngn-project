@@ -28,6 +28,14 @@ BREAK = ("s2", "s3")
 
 
 def main():
+    """Demonstrate link-failure rerouting and recovery.
+
+    Breaks a link that a live flow is using, watches it move to an
+    alternative path without traffic stopping, then restores the link
+    (the flow stays on its new path). A final case shows a flow that
+    has no alternative going FAILED and recovering when the link is
+    restored.
+    """
     demo = Demo("Link failure and rerouting", "link failure and rerouting")
     require_ready()
     reset()
@@ -95,7 +103,14 @@ def main():
 
 
 def _report_latency(demo):
-    """Detection-to-installation time, from the controller's own event log."""
+    """Print the detection-to-installation latency from the controller event log.
+
+    Reads ``controller_events.jsonl`` and computes the gap between the
+    last ``link_down`` and the last ``rerouted`` event.
+
+    Args:
+        demo: A ``Demo`` instance used for narration output.
+    """
     import json
     from pathlib import Path
 

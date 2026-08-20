@@ -26,15 +26,37 @@ HARD = 12
 
 
 def secs(value):
-    return "—" if value is None else f"{value}s"
+    """Format a seconds value for display, or a dash when ``None``.
+
+    Args:
+        value (int, float, or None): Seconds to format.
+
+    Returns:
+        str: Formatted string (e.g. ``'8s'``) or ``'-'``.
+    """
+    return "-" if value is None else f"{value}s"
 
 
 def rate(value):
-    return "—" if value is None else f"{value} Mbps"
+    """Format a throughput value for display, or a dash when ``None``.
+
+    Args:
+        value (int, float, or None): Throughput in Mbps.
+
+    Returns:
+        str: Formatted string (e.g. ``'3.5 Mbps'``) or ``'-'``.
+    """
+    return "-" if value is None else f"{value} Mbps"
 
 
 def main():
-    demo = Demo("TTL — automatic release", "TTL and automatic release")
+    """Demonstrate TTL-based automatic flow release.
+
+    Three cases: an idle flow expiring and releasing its capacity, the
+    same flow kept alive by active traffic, and a hard timeout firing
+    mid-transfer regardless of activity.
+    """
+    demo = Demo("TTL, automatic release", "TTL and automatic release")
     require_ready()
     reset()
 

@@ -17,6 +17,13 @@ OUT_OF_S1 = ["s1--s2", "s1--s4", "s1--s6"]
 
 
 def main():
+    """Demonstrate priority-based preemption.
+
+    Fills every link out of s1 with low-priority traffic, then shows
+    that a high-priority request reclaims capacity by preempting a victim.
+    The victim is rerouted without preemption rights of its own, so
+    preemption cannot cascade.
+    """
     demo = Demo("Preemption", "preemption")
     require_ready()
     reset()

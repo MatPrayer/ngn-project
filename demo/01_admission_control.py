@@ -19,6 +19,16 @@ ATTEMPTS = 9
 
 
 def measure(demo, flows, label):
+    """Run concurrent iperf3 tests over *flows* and report satisfaction.
+
+    Args:
+        demo: A ``Demo`` instance used for narration output.
+        flows (list): Flow dictionaries returned by the controller.
+        label (str): Label printed alongside the summary line.
+
+    Returns:
+        int: Number of flows whose measured rate met their reservation.
+    """
     rates = iperf_parallel(
         [("h1", "h4", f["tp_dst"]) for f in flows],
         seconds=4 if demo.args.quick else 7,
@@ -35,6 +45,13 @@ def measure(demo, flows, label):
 
 
 def main():
+    """Demonstrate that admission control preserves per-flow guarantees.
+
+    Offers the same 9 requests twice, once with admission control and
+    once without, then measures every admitted flow concurrently. With
+    admission control fewer flows are accepted but each meets its target;
+    without it all are accepted but none does.
+    """
     demo = Demo("Admission control", "admission control, and the baseline with none")
     require_ready()
     reset()

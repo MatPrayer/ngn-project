@@ -21,6 +21,12 @@ REQUEST_MBPS = 2
 
 
 def main():
+    """Demonstrate widest-path vs shortest-path routing.
+
+    On this topology both policies admit the same number of requests but
+    widest-path distributes load more evenly, leaving more headroom for
+    future requests.
+    """
     demo = Demo("Widest path vs shortest path", "widest path against shortest path")
     require_ready()
     reset()
@@ -69,6 +75,12 @@ def main():
 
 
 def _utilisation():
+    """Return ``{link_id: utilisation_ratio}`` for every link.
+
+    Returns:
+        dict: Mapping from link ID to a float in ``[0.0, 1.0]``
+        representing used-to-capacity ratio.
+    """
     return {
         link_id: (entry["used_mbps"] / entry["capacity_mbps"]) if entry["capacity_mbps"] else 0.0
         for link_id, entry in links().items()

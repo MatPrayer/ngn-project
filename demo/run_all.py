@@ -27,6 +27,15 @@ SCRIPTS = [
 
 
 def main() -> int:
+    """Run every demo script in order, stopping on the first failure.
+
+    Checks the lab and controller up front, then invokes each numbered
+    demo script as a subprocess. Passes ``--no-pause`` and/or ``--quick``
+    through when given on the command line.
+
+    Returns:
+        int: Zero on success, or the failing script's exit code.
+    """
     passthrough = [a for a in sys.argv[1:] if a in ("--no-pause", "--quick")]
 
     print()
