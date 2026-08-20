@@ -30,10 +30,20 @@ class FlowRemProbe(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
+        """Initialize the flow-removal probe app.
+
+        Clears the event log on startup.
+        """
         super().__init__(*args, **kwargs)
         EVENT_LOG.write_text("")
 
     def record(self, kind, **fields):
+        """Append one event to the JSONL log with timestamps.
+
+        Args:
+            kind (str): Event type identifier.
+            **fields: Arbitrary key-value pairs included in the event.
+        """
         entry = {"kind": kind, "t": time.time(), "mono": time.monotonic(), **fields}
         with EVENT_LOG.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -41,6 +51,14 @@ class FlowRemProbe(app_manager.OSKenApp):
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
+        """Install two flow entries on s1 to test idle and hard timeout removal.
+
+        Both entries use ``OFPFF_SEND_FLOW_REM`` so the switch sends
+        ``OFPT_FLOW_REMOVED`` on expiry. Only dpid 1 is used.
+
+        Args:
+            ev (EventOFPSwitchFeatures): Switch features event.
+        """
         dp = ev.msg.datapath
         self.record("switch_up", dpid=dp.id)
         if dp.id != 1:
@@ -73,6 +91,11 @@ class FlowRemProbe(app_manager.OSKenApp):
 
     @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def flow_removed_handler(self, ev):
+        """Log every OFPT_FLOW_REMOVED event with its reason code.
+
+        Args:
+            ev (EventOFPFlowRemoved): Flow removed event from the switch.
+        """
         msg = ev.msg
         ofp = msg.datapath.ofproto
         reason = {
@@ -91,11 +114,17 @@ class FlowRemProbe(app_manager.OSKenApp):
 
     @set_ev_cls(ofp_event.EventOFPErrorMsg, [CONFIG_DISPATCHER, MAIN_DISPATCHER])
     def error_handler(self, ev):
+        """Log OpenFlow error messages from the switch.
+
+        Args:
+            ev (EventOFPErrorMsg): OpenFlow error message event.
+        """
         msg = ev.msg
         self.record("of_error", dpid=msg.datapath.id, type=msg.type, code=msg.code)
 
 
 def main():
+    """Launch the flow-removal probe os-ken controller application."""
     from os_ken import cfg, log
 
     log.early_init_log(20)

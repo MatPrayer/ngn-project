@@ -25,6 +25,12 @@ PYTHON = str(HERE.parent / ".venv" / "bin" / "python")
 
 
 def events():
+    """Parse the event log file into a list of dictionaries.
+
+    Returns:
+        list[dict]: Parsed event entries, or an empty list if the log
+            does not exist.
+    """
     if not EVENT_LOG.exists():
         return []
     out = []
@@ -35,18 +41,46 @@ def events():
 
 
 def sh(machine, command, lab, timeout=60):
-    """Run a command inside a Kathara machine, return (stdout, rc)."""
+    """Run a command inside a Kathara machine, return (stdout, rc).
+
+    Args:
+        machine (str): Name of the Kathara machine to execute in.
+        command (str): Shell command string to run.
+        lab (Lab): The deployed Kathara lab instance.
+        timeout (int): Execution timeout in seconds. Defaults to 60.
+
+    Returns:
+        tuple[str, str, int]: Decoded stdout, decoded stderr, and return code.
+    """
     stdout, stderr, rc = Kathara.get_instance().exec(
         machine, ["sh", "-c", command], lab=lab, stream=False
     )
 
     def text(raw):
+        """Decode raw bytes to string, tolerating decode errors.
+
+        Args:
+            raw (bytes or None): Raw byte string to decode.
+
+        Returns:
+            str: Decoded text, or an empty string if raw is None.
+        """
         return raw.decode(errors="replace") if raw else ""
 
     return text(stdout), text(stderr), rc
 
 
 def wait_for(predicate, timeout, poll=0.3):
+    """Poll a predicate until it returns a truthy value or timeout.
+
+    Args:
+        predicate (callable): Zero-argument function polled each cycle.
+        timeout (float): Maximum seconds to wait.
+        poll (float): Seconds between polls. Defaults to 0.3.
+
+    Returns:
+        The truthy return value of predicate, or None on timeout.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
@@ -57,6 +91,14 @@ def wait_for(predicate, timeout, poll=0.3):
 
 
 def main():
+    """Run the full spike validation sequence end to end.
+
+    Starts the probe controller, deploys the lab, runs check B (meters)
+    and check A (port status), then tears everything down.
+
+    Returns:
+        dict: Mapping of check names to their result values.
+    """
     results = {}
     controller = subprocess.Popen(
         [PYTHON, str(HERE / "spike_controller.py")],
@@ -155,13 +197,25 @@ def main():
 
 
 def spike_controller_rate():
+    """Return the meter rate configured in spike_controller (kbps).
+
+    Returns:
+        int: ``METER_RATE_KBPS`` from the spike_controller module.
+    """
     import spike_controller
 
     return spike_controller.METER_RATE_KBPS
 
 
 def parse_iperf_mbps(output):
-    """Pull receiver throughput out of iperf3 JSON, tolerating junk around it."""
+    """Pull receiver throughput out of iperf3 JSON, tolerating junk around it.
+
+    Args:
+        output (str): Raw iperf3 ``-J`` output, possibly with surrounding text.
+
+    Returns:
+        float or None: Throughput in Mbps, or None if parsing fails.
+    """
     match = re.search(r"\{.*\}", output, re.S)
     if not match:
         return None
@@ -173,11 +227,24 @@ def parse_iperf_mbps(output):
 
 
 def report(r):
+    """Print a formatted summary of the spike validation results.
+
+    Args:
+        r (dict): Check name to result mapping produced by ``main``.
+    """
     print("\n" + "=" * 62)
     print("SPIKE RESULTS")
     print("=" * 62)
 
     def verdict(ok):
+        """Format a boolean as PASS or FAIL.
+
+        Args:
+            ok (bool): Whether the check passed.
+
+        Returns:
+            str: ``"PASS"`` if ok, ``"FAIL"`` otherwise.
+        """
         return "PASS" if ok else "FAIL"
 
     print(f"switches connected to controller : {verdict(r.get('switches_connected'))}")

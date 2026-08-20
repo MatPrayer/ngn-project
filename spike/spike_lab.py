@@ -46,6 +46,14 @@ ovs-vsctl set-controller br0 tcp:$GW:{of_port}
 
 
 def build_lab() -> Lab:
+    """Build the line-topology lab without deploying it.
+
+    Creates the ``h1 -- s1 -- s2 -- h2`` topology with bridged switches
+    and startup scripts for IP addressing and OVS configuration.
+
+    Returns:
+        Lab: A configured but not yet deployed Kathara lab instance.
+    """
     lab = Lab(LAB_NAME)
 
     for name, dpid in (("s1", "0000000000000001"), ("s2", "0000000000000002")):
@@ -75,12 +83,18 @@ def build_lab() -> Lab:
 
 
 def deploy() -> Lab:
+    """Build and deploy the spike lab to Docker.
+
+    Returns:
+        Lab: The deployed Kathara lab instance.
+    """
     lab = build_lab()
     Kathara.get_instance().deploy_lab(lab)
     return lab
 
 
 def undeploy() -> None:
+    """Tear down all containers and networks for the spike lab."""
     Kathara.get_instance().undeploy_lab(lab_name=LAB_NAME)
 
 

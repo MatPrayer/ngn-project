@@ -42,23 +42,57 @@ RESULTS = HERE / "controller_validation.json"
 
 
 def sh(machine, command, lab):
+    """Run a command inside a Kathara machine and return decoded output.
+
+    Args:
+        machine (str): Name of the Kathara machine.
+        command (str): Shell command to execute.
+        lab (Lab): The deployed Kathara lab instance.
+
+    Returns:
+        tuple[str, str, int]: Decoded stdout, decoded stderr, and return code.
+    """
     stdout, stderr, rc = Kathara.get_instance().exec(
         machine, ["sh", "-c", command], lab=lab, stream=False
     )
 
     def text(raw):
+        """Decode raw bytes to string, tolerating decode errors.
+
+        Args:
+            raw (bytes or None): Raw byte string to decode.
+
+        Returns:
+            str: Decoded text, or an empty string if raw is None.
+        """
         return raw.decode(errors="replace") if raw else ""
 
     return text(stdout), text(stderr), rc
 
 
 def events():
+    """Parse the controller event log into a list of dictionaries.
+
+    Returns:
+        list[dict]: Parsed event entries, or an empty list if the log
+            does not exist.
+    """
     if not EVENT_LOG.exists():
         return []
     return [json.loads(line) for line in EVENT_LOG.read_text().splitlines() if line.strip()]
 
 
 def wait_for(predicate, timeout, poll=0.5):
+    """Poll a predicate until it returns truthy or timeout.
+
+    Args:
+        predicate (callable): Zero-argument function polled each cycle.
+        timeout (float): Maximum seconds to wait.
+        poll (float): Seconds between polls. Defaults to 0.5.
+
+    Returns:
+        The truthy return value of predicate, or None on timeout.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
@@ -69,6 +103,14 @@ def wait_for(predicate, timeout, poll=0.5):
 
 
 def parse_iperf_mbps(output):
+    """Extract receiver throughput in Mbps from iperf3 JSON output.
+
+    Args:
+        output (str): Raw iperf3 ``-J`` output.
+
+    Returns:
+        float or None: Throughput in Mbps, or None if parsing fails.
+    """
     match = re.search(r"\{.*\}", output, re.S)
     if not match:
         return None
@@ -79,6 +121,15 @@ def parse_iperf_mbps(output):
 
 
 def port_in_use(host, port):
+    """Check whether a TCP port is currently accepting connections.
+
+    Args:
+        host (str): Hostname or IP address to probe.
+        port (int): TCP port number.
+
+    Returns:
+        bool: True if the port is open and accepting connections.
+    """
     with socket.socket() as probe:
         probe.settimeout(1.0)
         return probe.connect_ex((host, port)) == 0
@@ -93,6 +144,9 @@ def preflight():
     its own reservations. The run looks plausible and every number is wrong.
     os-ken makes this worse by masking the bind failure behind an
     AttributeError in its own shutdown path, so nothing says "address in use".
+
+    Returns:
+        bool: True if the ports are free and it is safe to proceed.
     """
     busy = [f"{host}:{port}"
             for host, port in (("127.0.0.1", 6653), ("127.0.0.1", 9000), ("127.0.0.1", 8080))
@@ -106,6 +160,17 @@ def preflight():
 
 
 def check(results, name, ok, **detail):
+    """Record a single validation result and print its verdict.
+
+    Args:
+        results (dict): Accumulator dict for all check results.
+        name (str): Check identifier string.
+        ok (bool): Whether the check passed.
+        **detail: Arbitrary metadata attached to the result entry.
+
+    Returns:
+        bool: The ``ok`` value, for chaining.
+    """
     results[name] = {"pass": bool(ok), **detail}
     print(f"    {name:<28} {'PASS' if ok else 'FAIL'}  {detail if detail else ''}")
     return ok
@@ -116,13 +181,28 @@ def check(results, name, ok, **detail):
 
 def check_clean_state(results):
     """Every check below assumes an empty network, so assert it rather than
-    assume it. A leftover reservation silently changes which path is widest."""
+    assume it. A leftover reservation silently changes which path is widest.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+
+    Returns:
+        bool: True if the controller has no pre-existing flows.
+    """
     flows = send({"cmd": "flows"})["flows"]
     return check(results, "controller_state_clean", not flows,
                  pre_existing=[f["flow_id"] for f in flows])
 
 
 def check_switches_connect(results):
+    """Wait for all six switches to connect and record the result.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+
+    Returns:
+        bool: True if all six switches connected within the timeout.
+    """
     print("[*] check 1: switches connect")
     seen = wait_for(
         lambda: {e["dpid"] for e in events() if e["kind"] == "switch_up"} if
@@ -134,6 +214,20 @@ def check_switches_connect(results):
 
 
 def check_widest_admission(t, lab, results):
+    """Verify widest-path admission picks the wide path and meter enforces 5 Mbps.
+
+    Installs a 5 Mbps flow from h1 to h4, confirms it takes a 3-hop 10 Mbps
+    path (not the 1-hop 4 Mbps chord), then runs iperf3 to verify metering.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for check results.
+
+    Returns:
+        dict or None: The flow record from the admission reply, or None if
+            admission was rejected.
+    """
     print("[*] check 2/3: widest-path admission and meter enforcement")
     reply = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 5, "priority": 1,
                   "idle_timeout": 120})
@@ -176,7 +270,17 @@ def check_widest_admission(t, lab, results):
 
 
 def http(path, method="GET", body=None):
-    """Minimal HTTP client, stdlib only. Returns (status, parsed-or-text)."""
+    """Minimal HTTP client, stdlib only. Returns (status, parsed-or-text).
+
+    Args:
+        path (str): URL path relative to ``http://127.0.0.1:8080``.
+        method (str): HTTP method. Defaults to ``"GET"``.
+        body (dict, optional): Request body, JSON-encoded automatically.
+
+    Returns:
+        tuple[int, str | dict | list]: HTTP status code and the response
+            body parsed as JSON, or raw text if not valid JSON.
+    """
     request = urllib.request.Request(
         f"http://127.0.0.1:8080{path}",
         method=method,
@@ -200,11 +304,17 @@ def http(path, method="GET", body=None):
 def check_dashboard(t, lab, results, flow):
     """The dashboard API, and the flow-counter poll that feeds it.
 
-    The counters are the part worth testing: `idle_timeout` resets on traffic
+    The counters are the part worth testing: ``idle_timeout`` resets on traffic
     and the switch never says so, so the controller infers activity by watching
     the packet counter. If that poll is broken the UI shows a TTL that never
     counts down and a throughput permanently stuck at zero — and nothing else
     in the system would notice.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for check results.
+        flow (dict): Flow record from a previous admission check.
     """
     print("[*] check 9: dashboard API")
     status, page = http("/")
@@ -261,6 +371,11 @@ def check_dashboard(t, lab, results, flow):
 
 
 def check_shortest_policy(results):
+    """Verify shortest-path routing picks the direct 2-hop chord.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+    """
     print("[*] check 4: shortest-path policy")
     reply = send({"cmd": "add", "src": "h2", "dst": "h5", "bandwidth_mbps": 2,
                   "policy": "shortest", "idle_timeout": 120})
@@ -271,6 +386,11 @@ def check_shortest_policy(results):
 
 
 def check_rejection(results):
+    """Verify that an impossible bandwidth request is refused with a reason.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+    """
     print("[*] check 5: impossible request refused")
     reply = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 50})
     check(results, "oversized_request_refused",
@@ -278,6 +398,14 @@ def check_rejection(results):
 
 
 def check_ttl(results):
+    """Verify that an idle flow expires and its capacity is released.
+
+    Installs a flow with a 5-second idle timeout, waits for expiry via
+    the event log, then confirms residual capacity increased.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+    """
     print("[*] check 6: TTL releases capacity")
     reply = send({"cmd": "add", "src": "h3", "dst": "h6", "bandwidth_mbps": 3,
                   "idle_timeout": 5})
@@ -301,6 +429,15 @@ def check_ttl(results):
 
 
 def check_preemption(results):
+    """Verify that a high-priority request preempts lower-priority flows.
+
+    Fills the network with priority-1 traffic, confirms a new priority-1
+    request is blocked, then checks a priority-5 request succeeds by
+    preempting victims.
+
+    Args:
+        results (dict): Accumulator dict for check results.
+    """
     print("[*] check 7: preemption")
     send({"cmd": "clear"})
     time.sleep(1)
@@ -333,6 +470,16 @@ def check_preemption(results):
 
 
 def check_link_failure(t, lab, results):
+    """Verify that a downed link triggers rerouting of the affected flow.
+
+    Brings down one end of a core link, waits for a reroute event, then
+    confirms traffic still flows on the new path.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for check results.
+    """
     print("[*] check 8: link failure rerouting")
     time.sleep(1)
     reply = send({"cmd": "add", "src": "h1", "dst": "h4", "bandwidth_mbps": 3,
@@ -376,6 +523,15 @@ def check_link_failure(t, lab, results):
 
 
 def main():
+    """Run the full controller validation suite end to end.
+
+    Deploys the topology, starts the controller, runs all checks in order,
+    then tears everything down.
+
+    Returns:
+        tuple[Topology, dict]: The topology object and a dict mapping check
+            names to their result entries.
+    """
     results = {}
     t = topo.default_topology()
     controller = None
@@ -434,6 +590,11 @@ def main():
 
 
 def report(results):
+    """Print a formatted summary of all validation results.
+
+    Args:
+        results (dict): Check name to result mapping produced by ``main``.
+    """
     print("\n" + "=" * 66)
     print("CONTROLLER VALIDATION")
     print("=" * 66)

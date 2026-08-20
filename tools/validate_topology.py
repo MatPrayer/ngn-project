@@ -34,17 +34,43 @@ RESULTS = HERE / "topology_validation.json"
 
 
 def sh(machine, command, lab):
+    """Run a command inside a Kathara machine and return decoded output.
+
+    Args:
+        machine (str): Name of the Kathara machine.
+        command (str): Shell command to execute.
+        lab (Lab): The deployed Kathara lab instance.
+
+    Returns:
+        tuple[str, str, int]: Decoded stdout, decoded stderr, and return code.
+    """
     stdout, stderr, rc = Kathara.get_instance().exec(
         machine, ["sh", "-c", command], lab=lab, stream=False
     )
 
     def text(raw):
+        """Decode raw bytes to string, tolerating decode errors.
+
+        Args:
+            raw (bytes or None): Raw byte string to decode.
+
+        Returns:
+            str: Decoded text, or an empty string if raw is None.
+        """
         return raw.decode(errors="replace") if raw else ""
 
     return text(stdout), text(stderr), rc
 
 
 def parse_iperf_mbps(output):
+    """Extract receiver throughput in Mbps from iperf3 JSON output.
+
+    Args:
+        output (str): Raw iperf3 ``-J`` output.
+
+    Returns:
+        float or None: Throughput in Mbps, or None if parsing fails.
+    """
     match = re.search(r"\{.*\}", output, re.S)
     if not match:
         return None
@@ -56,6 +82,16 @@ def parse_iperf_mbps(output):
 
 
 def wait_for(predicate, timeout, poll=0.5):
+    """Poll a predicate until it returns truthy or timeout.
+
+    Args:
+        predicate (callable): Zero-argument function polled each cycle.
+        timeout (float): Maximum seconds to wait.
+        poll (float): Seconds between polls. Defaults to 0.5.
+
+    Returns:
+        The truthy return value of predicate, or None on timeout.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
@@ -69,6 +105,17 @@ def wait_for(predicate, timeout, poll=0.5):
 
 
 def check_ports_and_tc(t, lab, results):
+    """Verify OpenFlow port numbering and tc HTB shaping on every interface.
+
+    Checks that each switch's OpenFlow port numbers match expectations and
+    that ``tc`` HTB classes are present at the configured rates on both
+    switch and host sides of every link.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for validation results.
+    """
     print("[*] check 1/2: OpenFlow port numbering and tc shaping")
     port_errors, tc_errors = [], []
 
@@ -115,6 +162,16 @@ def install_static_path(t, lab, src_host, dst_host, switch_path):
 
     Matching is on in_port alone, which is enough because each switch on the
     path carries only this one test flow at a time.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        src_host (str): Source host name.
+        dst_host (str): Destination host name.
+        switch_path (list[str]): Ordered list of switch names forming the path.
+
+    Returns:
+        list[tuple[str, int, int]]: List of (switch, in_port, out_port) hops.
     """
     hops = []
     for position, switch in enumerate(switch_path):
@@ -140,16 +197,46 @@ def install_static_path(t, lab, src_host, dst_host, switch_path):
 
 
 def _link_id(a, b):
+    """Build a canonical link identifier from two endpoint names.
+
+    Args:
+        a (str): First endpoint name.
+        b (str): Second endpoint name.
+
+    Returns:
+        str: Sorted ``"a--b"`` string suitable for lookup in the topology.
+    """
     lo, hi = sorted((a, b))
     return f"{lo}--{hi}"
 
 
 def clear_flows(t, lab):
+    """Delete all flow entries from every switch in the topology.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+    """
     for switch in t.switches:
         sh(switch, "ovs-ofctl -O OpenFlow13 del-flows br0", lab)
 
 
 def measure_path(t, lab, src_host, dst_host, switch_path, label, results):
+    """Install a static path, verify connectivity, and measure throughput.
+
+    Installs bidirectional flow entries along the given switch path, runs
+    a ping check, then iperf3 to measure effective throughput against the
+    path bottleneck.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        src_host (str): Source host name.
+        dst_host (str): Destination host name.
+        switch_path (list[str]): Ordered switch names forming the path.
+        label (str): Human-readable label for this measurement (e.g. ``"widest"``).
+        results (dict): Accumulator dict for validation results.
+    """
     bottleneck = min(
         t.link_by_id(_link_id(a, b)).capacity_mbps
         for a, b in zip(switch_path, switch_path[1:])
@@ -183,6 +270,16 @@ def measure_path(t, lab, src_host, dst_host, switch_path, label, results):
 
 
 def check_shaping_binds(t, lab, results):
+    """Measure throughput along the shortest and widest paths to verify shaping.
+
+    Runs iperf3 along the narrow direct path and the wide multi-hop path,
+    confirming each comes out near its configured bottleneck.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for validation results.
+    """
     print("[*] check 3: shaping binds along real paths")
     sh("h4", "iperf3 -s -D --logfile /tmp/iperf-server.log", lab)
     time.sleep(1)
@@ -196,6 +293,17 @@ def check_shaping_binds(t, lab, results):
 
 
 def check_flow_removed(t, lab, results):
+    """Verify OFPT_FLOW_REMOVED delivery for idle and hard timeouts.
+
+    Starts the flowrem_probe controller, waits for both a 3-second idle
+    timeout and a 6-second hard timeout removal event, then confirms the
+    correct reason codes were received.
+
+    Args:
+        t (Topology): The deployed topology object.
+        lab (Lab): The deployed Kathara lab instance.
+        results (dict): Accumulator dict for validation results.
+    """
     print("[*] check 4: OFPT_FLOW_REMOVED delivery")
     if FLOWREM_LOG.exists():
         FLOWREM_LOG.unlink()
@@ -208,6 +316,11 @@ def check_flow_removed(t, lab, results):
     try:
 
         def events():
+            """Parse the flowrem event log into a list of dicts.
+
+            Returns:
+                list[dict]: Parsed event entries, or an empty list.
+            """
             if not FLOWREM_LOG.exists():
                 return []
             return [json.loads(line) for line in FLOWREM_LOG.read_text().splitlines() if line.strip()]
@@ -246,6 +359,12 @@ def check_flow_removed(t, lab, results):
 
 
 def report(t, results):
+    """Print a formatted summary of the topology validation results.
+
+    Args:
+        t (Topology): The topology object (used for switch/host/link counts).
+        results (dict): Check name to result mapping produced by ``main``.
+    """
     print("\n" + "=" * 66)
     print("TOPOLOGY VALIDATION")
     print("=" * 66)
@@ -254,6 +373,14 @@ def report(t, results):
     print()
 
     def verdict(ok):
+        """Format a boolean as PASS or FAIL.
+
+        Args:
+            ok (bool): Whether the check passed.
+
+        Returns:
+            str: ``"PASS"`` if ok, ``"FAIL"`` otherwise.
+        """
         return "PASS" if ok else "FAIL"
 
     print(f"OpenFlow port numbering deterministic : {verdict(not results.get('port_errors'))}")
@@ -279,6 +406,14 @@ def report(t, results):
 
 
 def main():
+    """Run the full topology validation suite end to end.
+
+    Deploys the topology, waits for startup scripts, then runs port/tc
+    checks, shaping measurements, and flow-removed validation.
+
+    Returns:
+        tuple[Topology, dict]: The topology object and validation results.
+    """
     results = {}
     t = topo.default_topology()
     lab = None
