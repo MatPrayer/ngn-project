@@ -37,10 +37,79 @@ def _script(name: str) -> str:
     """
     return (SCRIPTS / name).read_text() + "\n"
 
-# Capacity given to host access links. Deliberately far above any switch-to-
-# switch capacity so the core links are always the binding constraint and the
-# access link never shows up as a bottleneck in the widest-path computation.
+
+
+
 ACCESS_CAPACITY_MBPS = 100.0
+
+
+
+_CONTROLLER_HOST: Optional[str] = None
+_CONTROLLER_HOST_RESOLVED = False
+
+
+def controller_host() -> Optional[str]:
+    """Return the address a switch container must use to reach the controller.
+
+    The controller runs on the host, outside the lab. On plain Linux Docker the
+    container's default gateway *is* the host, so the startup script can work
+    it out by itself and this returns ``None``. On Docker Desktop (macOS and
+    Windows) that gateway is docker0 inside the LinuxKit VM and never reaches
+    the host, so an explicit address is needed.
+
+    Docker's own ``host-gateway`` keyword resolves to the right address on
+    every platform, but Kathara rewrites ``/etc/hosts`` in every lab machine
+    and wipes the mapping Docker Desktop injects. The address is therefore
+    resolved once here, in a throwaway container, and baked into the generated
+    startup scripts as a literal.
+
+    Returns:
+        str | None: IPv4 address of the host as seen from a container, or
+        ``None`` when the container default gateway can be used instead.
+    """
+    global _CONTROLLER_HOST, _CONTROLLER_HOST_RESOLVED
+    if _CONTROLLER_HOST_RESOLVED:
+        return _CONTROLLER_HOST
+
+    _CONTROLLER_HOST_RESOLVED = True
+    try:
+        import docker
+
+        client = docker.from_env()
+        if "Docker Desktop" not in client.info().get("OperatingSystem", ""):
+            return _CONTROLLER_HOST
+        output = client.containers.run(
+            IMAGE,
+            ["sh", "-c", "getent ahostsv4 host.docker.internal | head -1"],
+            extra_hosts={"host.docker.internal": "host-gateway"},
+            remove=True,
+        )
+        address = output.decode().split()[0]
+    except Exception:
+        return _CONTROLLER_HOST
+
+    octets = address.split(".")
+    if len(octets) == 4 and all(o.isdigit() for o in octets):
+        _CONTROLLER_HOST = address
+    return _CONTROLLER_HOST
+
+
+def controller_host_override() -> str:
+    """Return the ``$GW`` pre-assignment for a switch startup script.
+
+    ``scripts/switch_startup.sh`` falls back to the container default gateway
+    when ``GW`` is unset, which is right on Linux. On Docker Desktop the
+    address has to be supplied from outside, so emit an assignment ahead of
+    the call.
+
+    Returns:
+        str: A ``GW=<address>`` line, or an empty string to let the script
+        work the address out for itself.
+    """
+    host = controller_host()
+    if not host:
+        return ""
+    return f"# Host as seen from a container (Docker Desktop); see D20.\nGW={host}\n"
 
 
 @dataclass(frozen=True)
@@ -310,7 +379,11 @@ class Topology:
             f"eth{index}:{index + 1}:{link.capacity_mbps:g}"
             for index, link in self.interfaces(switch)
         )
-        return _script("switch_startup.sh") + f"switch_startup {self.dpid(switch):016x} {specs}\n"
+        return (
+            _script("switch_startup.sh")
+            + controller_host_override()
+            + f"switch_startup {self.dpid(switch):016x} {specs}\n"
+        )
 
     def _host_startup(self, host: str) -> str:
         """Render the startup script for a host container.

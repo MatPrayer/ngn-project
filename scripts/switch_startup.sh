@@ -7,7 +7,9 @@ switch_startup() {
 
 	/usr/share/openvswitch/scripts/ovs-ctl start --system-id=random --no-mlockall
 
-	GW=$(ip route | awk '/^default/ {print $3}')
+	# Caller may pre-set GW (Docker Desktop, see D20); otherwise the
+	# container default gateway is the host running the controller.
+	GW=${GW:-$(ip route | awk '/^default/ {print $3}')}
 
 	ovs-vsctl add-br br0
 	ovs-vsctl set bridge br0 protocols=OpenFlow13
