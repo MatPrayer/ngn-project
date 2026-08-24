@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from Kathara.manager.Kathara import Kathara
@@ -18,9 +19,23 @@ from Kathara.model.Lab import Lab
 
 LAB_NAME = "netslice"
 IMAGE = "kathara/sdn"
-OF_PORT = 6653
 SUBNET = "10.0.0"
 PREFIX_LEN = 24
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS = ROOT / "scripts"
+
+
+def _script(name: str) -> str:
+    """Return the contents of a shell script under ``scripts/``.
+
+    Args:
+        name: Script file name (e.g. ``"switch_startup.sh"``).
+
+    Returns:
+        str: The scripts content, with a trailing newline.
+    """
+    return (SCRIPTS / name).read_text() + "\n"
 
 # Capacity given to host access links. Deliberately far above any switch-to-
 # switch capacity so the core links are always the binding constraint and the
@@ -276,13 +291,14 @@ class Topology:
         """
         return self._ifaces[host][0][1]
 
-    # ------------------------------------------------------------ startup gen
+
 
     def _switch_startup(self, switch: str) -> str:
-        """Generate the startup script for a switch container.
+        """Render the startup script for a switch container.
 
-        Sets up OVS, adds each interface with a pinned ``ofport_request``,
-        applies ``tc`` shaping, and points the bridge at the controller.
+        Loads the real shell logic from ``scripts/switch_startup.sh`` and
+        appends the per-switch invocation with its interface specs, so the
+        startup file is a single self-contained call.
 
         Args:
             switch: Switch name.
@@ -290,36 +306,17 @@ class Topology:
         Returns:
             str: Shell script as a string.
         """
-        lines = [
-            "/usr/share/openvswitch/scripts/ovs-ctl start --system-id=random --no-mlockall",
-            "",
-            "GW=$(ip route | awk '/^default/ {print $3}')",
-            "",
-            "ovs-vsctl add-br br0",
-            "ovs-vsctl set bridge br0 protocols=OpenFlow13",
-            f"ovs-vsctl set bridge br0 other-config:datapath-id={self.dpid(switch):016x}",
-            # Secure fail mode: with no controller the switch forwards nothing,
-            # so a controller crash cannot silently turn the network into a hub.
-            "ovs-vsctl set-fail-mode br0 secure",
-            "",
-        ]
-        for index, link in self.interfaces(switch):
-            iface = f"eth{index}"
-            ofport = index + 1
-            lines.append(f"ip link set {iface} up")
-            lines.append(
-                f"ovs-vsctl add-port br0 {iface} -- set Interface {iface} ofport_request={ofport}"
-            )
-            lines.append(self._tc_command(iface, link.capacity_mbps))
-            lines.append("")
-        lines.append(f"ovs-vsctl set-controller br0 tcp:$GW:{OF_PORT}")
-        return "\n".join(lines) + "\n"
+        specs = " ".join(
+            f"eth{index}:{index + 1}:{link.capacity_mbps:g}"
+            for index, link in self.interfaces(switch)
+        )
+        return _script("switch_startup.sh") + f"switch_startup {self.dpid(switch):016x} {specs}\n"
 
     def _host_startup(self, host: str) -> str:
-        """Generate the startup script for a host container.
+        """Render the startup script for a host container.
 
-        Assigns the host's IP, applies ``tc`` shaping, and installs static
-        ARP for every peer so no ARP traffic reaches the data plane.
+        Loads the real shell logic from ``scripts/host_startup.sh`` and
+        appends the per-host invocation with its IP and static-ARP peers.
 
         Args:
             host: Host name.
@@ -327,47 +324,18 @@ class Topology:
         Returns:
             str: Shell script as a string.
         """
-        ip = self.host_ip(host)
-        lines = [
-            "ip link set eth0 up",
-            f"ip addr add {ip}/{PREFIX_LEN} dev eth0",
-            self._tc_command("eth0", self.access_link(host).capacity_mbps),
-            "",
-            "# Static ARP for every peer: keeps ARP off the data plane entirely,",
-            "# so the controller only ever handles IP flows.",
-        ]
-        for peer in sorted(self.hosts):
-            if peer == host:
-                continue
-            lines.append(
-                f"ip neigh replace {self.host_ip(peer)} lladdr {self.host_mac(peer)} "
-                f"dev eth0 nud permanent"
-            )
-        return "\n".join(lines) + "\n"
-
-    @staticmethod
-    def _tc_command(iface: str, capacity_mbps: float) -> str:
-        """Build the ``tc`` HTB command that shapes one interface.
-
-        Uses equal rate and ceil so the interface cannot borrow beyond its
-        configured capacity. Because every link applies the discipline on
-        both ends, shaping is symmetric.
-
-        Args:
-            iface: Network interface name (e.g. ``"eth0"``).
-            capacity_mbps: Shaped capacity in Mbps.
-
-        Returns:
-            str: Shell command to (re)place the root HTB qdisc.
-        """
-        rate = f"{capacity_mbps:g}mbit"
+        peers = " ".join(
+            f"{self.host_ip(peer)}:{self.host_mac(peer)}"
+            for peer in sorted(self.hosts)
+            if peer != host
+        )
         return (
-            f"tc qdisc replace dev {iface} root handle 1: htb default 1 && "
-            f"tc class replace dev {iface} parent 1: classid 1:1 htb "
-            f"rate {rate} ceil {rate} burst 15k"
+            _script("host_startup.sh")
+            + f"host_startup {self.host_ip(host)}/{PREFIX_LEN} "
+            f"{self.access_link(host).capacity_mbps:g} {peers}\n"
         )
 
-    # ------------------------------------------------------------------- lab
+
 
     def build_lab(self) -> Lab:
         """Construct a Kathara Lab object representing this topology.
@@ -551,9 +519,12 @@ def set_link(a: str, b: str, up: bool) -> Tuple[str, int]:
         i for i, candidate in topology.interfaces(a) if candidate.id == link.id
     )
     state = "up" if up else "down"
+
+
+    cmd = f"set -- eth{index} {state}\n" + (SCRIPTS / "link_state.sh").read_text()
     Kathara.get_instance().exec(
         a,
-        ["sh", "-c", f"ip link set eth{index} {state}"],
+        ["sh", "-c", cmd],
         lab_name=LAB_NAME,
         stream=False,
     )
