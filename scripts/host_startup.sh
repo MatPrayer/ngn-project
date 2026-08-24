@@ -1,12 +1,12 @@
 #!/bin/sh
 # Bring up one host container: IP + tc shaping + static ARP for every peer.
-# Usage: host_startup <ip> <prefix-len> <mbps> <peer-ip:peer-mac> [...]
+# Usage: host_startup <ip/prefix> <mbps> <peer-ip:peer-mac> [...]
 host_startup() {
-	IP=${1:?ip}; PREFIX=${2:?prefix len}; MBPS=${3:?mbps}
-	shift 3
+	IP=${1:?ip/prefix}; MBPS=${2:?mbps}
+	shift 2
 
 	ip link set eth0 up
-	ip addr add "$IP/$PREFIX" dev eth0
+	ip addr add "$IP" dev eth0
 	tc qdisc replace dev eth0 root handle 1: htb default 1
 	tc class replace dev eth0 parent 1: classid 1:1 htb rate "${MBPS}mbit" ceil "${MBPS}mbit" burst 15k
 
