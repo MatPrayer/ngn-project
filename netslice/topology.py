@@ -19,6 +19,9 @@ from Kathara.model.Lab import Lab
 
 LAB_NAME = "netslice"
 IMAGE = "kathara/sdn"
+
+
+OF_PORT = 6653
 SUBNET = "10.0.0"
 PREFIX_LEN = 24
 
