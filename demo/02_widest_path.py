@@ -32,18 +32,26 @@ def main():
     reset()
 
     demo.step("Same request, each policy: which path is chosen")
+
+
+
     for policy in ("shortest", "widest"):
         reset()
         reply = request(src="h1", dst="h4", bandwidth_mbps=REQUEST_MBPS,
                         policy=policy, idle_timeout=300, allow_preemption=False)
         demo.say(f"{policy:<9} {'-'.join(reply['flow']['path']):<14} "
                  f"bottleneck {reply['bottleneck_mbps']} Mbps")
+        demo.pause(f"{policy} path is live on the dashboard")
     demo.note("unmetered, those paths carry 3.83 and 9.56 Mbps "
               "(tools/validate_topology.py)")
     demo.pause()
 
-    # The per-request outcomes are not the point of this step — the totals are.
-    # Twenty-four ADMITTED lines would bury them.
+
+
+
+
+
+
     demo.step(f"Same {len(SEQUENCE)} requests of {REQUEST_MBPS} Mbps under each policy")
     results = {}
     for policy in ("shortest", "widest"):
@@ -55,7 +63,7 @@ def main():
             admitted += bool(reply.get("ok"))
         results[policy] = (admitted, _utilisation())
         demo.say(f"{policy:<9} done")
-    demo.pause()
+        demo.pause(f"{policy} result is on the dashboard")
 
     demo.step("Requests admitted")
     for policy, (admitted, _) in results.items():
