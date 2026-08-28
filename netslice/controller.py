@@ -55,7 +55,7 @@ from netslice.state import (
     FlowState,
     NetworkState,
 )
-from netslice.topology import OF_PORT, default_topology
+from netslice.topology import OF_PORT, default_topology, set_link
 
 ETH_TYPE_IP = 0x0800
 
@@ -588,6 +588,43 @@ class NetSliceController(app_manager.OSKenApp):
         """
         with self.lock:
             return {"ok": True, "links": self.state.utilisation()}
+
+    def set_link_state(self, link_id: str, up: bool) -> dict:
+        """Bring one end of a core link administratively up or down.
+
+        Deliberately takes no lock: it touches no ``NetworkState``, and the
+        Kathara exec underneath is slow enough that holding the lock across it
+        would stall every OpenFlow handler and dashboard poll. The controller
+        learns the outcome the same way it learns about a real failure, from
+        the ``OFPT_PORT_STATUS`` the switch sends back (D14).
+
+        Args:
+            link_id: Link identifier, as in ``"s2--s3"``.
+            up: ``True`` to restore the link, ``False`` to break it.
+
+        Returns:
+            dict: ``{"ok": True, "link": ..., "up": ..., "switch": ...,
+            "iface": ...}``, or ``{"ok": False, "reason": ...}`` if the link
+            is unknown or is an access link.
+        """
+        try:
+            link = self.topology.link_by_id(link_id)
+        except KeyError:
+            return {"ok": False, "reason": f"unknown link {link_id!r}"}
+        try:
+            switch, index = set_link(link.a, link.b, up=up)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except Exception as exc:
+            self.logger.exception("set_link %s up=%s failed", link_id, up)
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": True,
+            "link": link.id,
+            "up": up,
+            "switch": switch,
+            "iface": f"eth{index}",
+        }
 
     def snapshot(self) -> dict:
         """Everything the dashboard needs for one repaint, in one call.
