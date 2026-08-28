@@ -84,7 +84,13 @@
   #flowpanel { flex: 1 1 auto; min-height: 150px; }
 
   svg { display: block; flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; }
-  .link { stroke-linecap: round; cursor: pointer; }
+  /* The drawn line is 3-5px wide, which is right visually and far too thin to
+     hit. Clicks are taken by .linkhit instead: an invisible line over the same
+     path, wide enough to aim at. Nothing else on the map takes pointer events. */
+  .link { stroke-linecap: round; pointer-events: none; }
+  .llabel, .llabelbg { pointer-events: none; }
+  .linkhit { stroke: transparent; stroke-linecap: round; cursor: pointer; }
+  .link.busy { opacity: .45; }
   .link.down { stroke-dasharray: 6 5; }
   .link.lit { stroke: var(--accent) !important; }
   .access { stroke: #30363d; stroke-width: 2; }
@@ -200,7 +206,8 @@
           <span><i class="l-full"></i>full</span>
           <span><i class="l-over"></i>overbooked</span>
           <span><i class="l-down"></i>down</span>
-          <span style="margin-left:auto">labels show residual / capacity Mbps</span>
+          <span style="margin-left:auto">click a core link to break or restore it</span>
+          <span>labels show residual / capacity Mbps</span>
         </div>
       </div>
     </section>
@@ -251,6 +258,13 @@ const SVGNS = "http://www.w3.org/2000/svg";
 
 let topo = null, place = {}, centre = { x: 330, y: 275 };
 let selected = null, lastSeq = 0, everConnected = false;
+// Width of a link's invisible click target. Comfortably bigger than the widest
+// drawn line (6px when lit), without the chords overlapping each other.
+const HIT_WIDTH = 18;
+// Links with a break/restore in flight. The Kathara exec takes a moment and
+// the page repaints once a second, so without this a second click would fire
+// against the state shown before the first one landed.
+const linkBusy = new Set();
 
 const api = async (path, opts) => {
   const r = await fetch(path, opts);
@@ -351,6 +365,7 @@ function drawMap(state) {
 
   const coreLinks = topo.links.filter((l) => isSwitch(l.a) && isSwitch(l.b));
   const labelAt = labelPositions(coreLinks);
+  const hitAreas = [];
 
   for (const link of coreLinks) {
     const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
@@ -359,11 +374,23 @@ function drawMap(state) {
     const width = on ? 6 : 2 + live.capacity_mbps / 7;
     svg.appendChild(el("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      class: "link" + (live.down ? " down" : "") + (on ? " lit" : ""),
+      class: "link" + (live.down ? " down" : "") + (on ? " lit" : "")
+             + (linkBusy.has(link.id) ? " busy" : ""),
       stroke: linkColour(live),
       "stroke-width": width,
       "data-link": link.id,
     }));
+    // Collected and appended after every visible line, so the hit areas sit on
+    // top of the drawing rather than under the next link to be drawn.
+    const hit = el("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      class: "linkhit", "stroke-width": Math.max(width, HIT_WIDTH),
+      "data-hit": link.id,
+    });
+    hit.appendChild(el("title", {},
+      `${link.id} — click to ${live.down ? "restore" : "break"}`));
+    hit.onclick = () => setLink(link.id, live.down);
+    hitAreas.push(hit);
     // Overbooked: more reserved than the link can carry, which only happens
     // with admission control switched off. Hazard stripes over the red, so it
     // cannot be mistaken for a link that is merely full.
@@ -376,6 +403,8 @@ function drawMap(state) {
     }
   }
 
+  for (const hit of hitAreas) svg.appendChild(hit);
+
   // Labels after every line, so none of them is drawn over.
   for (const link of coreLinks) {
     const live = state.links[link.id] || { capacity_mbps: link.capacity_mbps, used_mbps: 0, down: false };
@@ -384,6 +413,7 @@ function drawMap(state) {
     const p = labelAt[link.id];
     svg.appendChild(el("rect", {
       x: p.x - 27, y: p.y - 8, width: 54, height: 16, rx: 8, fill: "#0d1117", opacity: .9,
+      class: "llabelbg",
     }));
     svg.appendChild(el("text", {
       x: p.x, y: p.y, class: "llabel" + (on ? " lit" : "") + (over ? " over" : ""),
@@ -541,6 +571,33 @@ $("req").onsubmit = async (e) => {
   showResult(reply);
   refresh();
 };
+
+/* Break or restore a link from the map.
+ *
+ * The desired state is sent explicitly rather than as a toggle, so a click
+ * acting on a stale repaint cannot invert the intent. The controller does not
+ * report the change itself. It hears about it from the switch's PORT_STATUS,
+ * exactly as it would a real failure, so the map catches up on the next poll.
+ */
+async function setLink(id, up) {
+  if (linkBusy.has(id)) return;
+  linkBusy.add(id);
+  try {
+    const reply = await api(`/api/links/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ up }),
+    });
+    const box = $("result");
+    box.className = "result show " + (reply.ok ? "ok" : "err");
+    box.textContent = reply.ok
+      ? `${reply.link} ${reply.up ? "restored" : "broken"} (${reply.switch} ${reply.iface})`
+      : reply.reason || "link change refused";
+  } finally {
+    linkBusy.delete(id);
+  }
+  await refresh();
+}
 
 $("clear").onclick = async () => {
   await api("/api/clear", { method: "POST" });
