@@ -34,6 +34,7 @@ API:
     POST   /api/flows           allocate; body is the request JSON
     DELETE /api/flows/<id>      release one flow
     POST   /api/clear           release everything
+    POST   /api/links/<id>      break or restore a core link; body {"up": bool}
 """
 
 from __future__ import annotations
@@ -256,14 +257,30 @@ def make_app(controller):
         return _json_response(start_response, reply)
 
     def remove_flow(environ, start_response, flow_id):
-        """DELETE /api/flows/<id> — release one flow."""
+        """DELETE /api/flows/<id>, release one flow."""
         reply = controller.remove_flow(flow_id)
         return _json_response(start_response, reply,
                               "200 OK" if reply.get("ok") else "404 Not Found")
 
     def clear(environ, start_response, *_):
-        """POST /api/clear — release every flow."""
+        """POST /api/clear, release every flow."""
         return _json_response(start_response, controller.clear_flows())
+
+    def set_link(environ, start_response, link_id):
+        """POST /api/links/<id>, break or restore one core link.
+
+        The body must carry an explicit ``{"up": bool}``: there is no toggle
+        here on purpose, so two clicks racing on a 1 Hz-polled page cannot
+        leave the link in whichever state happened to land last.
+        """
+        body = _read_body(environ)
+        if "up" not in body:
+            return _json_response(start_response,
+                                  {"ok": False, "reason": "body must set \"up\" to true or false"},
+                                  "400 Bad Request")
+        reply = controller.set_link_state(link_id, bool(body["up"]))
+        return _json_response(start_response, reply,
+                              "200 OK" if reply.get("ok") else "400 Bad Request")
 
     router.add("GET", "/", page)
     router.add("GET", "/index.html", page)
@@ -274,6 +291,7 @@ def make_app(controller):
     router.add("POST", "/api/flows", add_flow)
     router.add("DELETE", "/api/flows/([A-Za-z0-9_-]+)", remove_flow)
     router.add("POST", "/api/clear", clear)
+    router.add("POST", "/api/links/([A-Za-z0-9_-]+)", set_link)
 
     def application(environ, start_response):
         """WSGI entry point: route the request to a handler.
