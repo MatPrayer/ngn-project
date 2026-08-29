@@ -1,7 +1,11 @@
-"""Run every demo in order.
+"""run_all.py - run the demos, all of them or a chosen few.
 
-    python demo/run_all.py              # paced, for the live presentation
+    python demo/run_all.py              # all five, paced for a live audience
     python demo/run_all.py --no-pause   # straight through, for a rehearsal
+    python demo/run_all.py 3            # just the preemption one
+    python demo/run_all.py rerouting    # by name instead of number
+    python demo/run_all.py 1 2          # a couple, in the order given
+    python demo/run_all.py list         # what is available
 
 Checks the lab and the controller once up front, then hands over to each script
 in turn, waiting for enter before each one so the presenter controls when the
@@ -25,6 +29,52 @@ SCRIPTS = [
     ("04_ttl.py", "reservations that clean up after themselves"),
     ("05_rerouting.py", "survive a link failure"),
 ]
+
+
+def resolve(selectors) -> list:
+    """Map command-line selectors onto demo scripts.
+
+    A selector is a position (``3``), or any distinctive part of the script's
+    name (``ttl``, ``rerouting``, ``04``). Order follows the command line, so
+    demos can be replayed in whatever order a question demands.
+
+    Args:
+        selectors: Raw selector strings. Empty means every demo, in order.
+
+    Returns:
+        list[tuple[str, str]]: The chosen ``(script, blurb)`` pairs.
+
+    Raises:
+        KeyError: If a selector matches no demo, or is ambiguous.
+    """
+    if not selectors:
+        return list(SCRIPTS)
+
+    chosen = []
+    for selector in selectors:
+        if selector.isdigit() and 1 <= int(selector) <= len(SCRIPTS):
+            chosen.append(SCRIPTS[int(selector) - 1])
+            continue
+        matches = [s for s in SCRIPTS if selector.lower() in s[0].lower()]
+        if not matches:
+            raise KeyError(f"no demo matches {selector!r}")
+        if len(matches) > 1:
+            names = ", ".join(name for name, _ in matches)
+            raise KeyError(f"{selector!r} matches several demos: {names}")
+        chosen.append(matches[0])
+    return chosen
+
+
+def listing() -> str:
+    """Return the numbered list of demos, one per line.
+
+    Returns:
+        str: Lines of ``"  N  script  blurb"``.
+    """
+    return "\n".join(
+        dim(f"    {i}  {name:<26} {blurb}")
+        for i, (name, blurb) in enumerate(SCRIPTS, 1)
+    )
 
 
 def wait_for_enter(name: str, blurb: str) -> bool:
@@ -56,25 +106,58 @@ def main() -> int:
         int: Zero on success, the failing script's exit code, or 130 if the
         presenter interrupted at a prompt.
     """
-    passthrough = [a for a in sys.argv[1:] if a in ("--no-pause", "--quick")]
-    # Same rule as _common.Demo: no pausing when asked not to, and none when
-    # stdin is not a terminal (piped output, CI) or input() would fail at once.
+    arguments = sys.argv[1:]
+    if any(a in ("-h", "--help") for a in arguments):
+        print(__doc__.strip())
+        print("\ndemos:")
+        print(listing())
+        return 0
+
+    passthrough = [a for a in arguments if a in ("--no-pause", "--quick")]
+    selectors = [a for a in arguments if not a.startswith("-") and a != "list"]
+
+    if "list" in arguments:
+        print(listing())
+        return 0
+
+    unknown = [a for a in arguments if a.startswith("-") and a not in passthrough]
+    if unknown:
+        print(red(f"  unknown option(s): {' '.join(unknown)}"))
+        print(__doc__.strip())
+        return 2
+
+    try:
+        scripts = resolve(selectors)
+    except KeyError as exc:
+        print(red(f"  {exc.args[0]}"))
+        print("\ndemos:")
+        print(listing())
+        return 2
+
+
+
     paused = "--no-pause" not in passthrough and sys.stdin.isatty()
 
     print()
-    print(bold("  netslice — network slicing in SDN"))
-    print(dim("  five demos, in the order the report presents them"))
-    for name, blurb in SCRIPTS:
+    print(bold("  netslice, network slicing in SDN"))
+    if len(scripts) == len(SCRIPTS):
+        print(dim("  five demos, in the order the report presents them"))
+    else:
+        print(dim(f"  {len(scripts)} of {len(SCRIPTS)} demos"))
+    for name, blurb in scripts:
         print(dim(f"    {name:<26} {blurb}"))
 
     require_ready()
     reset()
 
-    for name, blurb in SCRIPTS:
+    for name, blurb in scripts:
         if paused and not wait_for_enter(name, blurb):
             print(red("\n  interrupted; putting the network back"))
             reset()
             return 130
+
+
+        sys.stdout.flush()
         result = subprocess.run([sys.executable, str(HERE / name), *passthrough])
         if result.returncode != 0:
             print(red(f"\n  {name} exited with {result.returncode}; stopping here"))
@@ -82,7 +165,8 @@ def main() -> int:
             return result.returncode
 
     reset()
-    print(bold("  all five complete, network back to a clean state"))
+    done = "all five" if len(scripts) == len(SCRIPTS) else f"{len(scripts)} of {len(SCRIPTS)}"
+    print(bold(f"  {done} complete, network back to a clean state"))
     print()
     return 0
 
