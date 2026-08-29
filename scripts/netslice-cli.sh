@@ -70,17 +70,17 @@ inspect
   Full options for any command:  netslice-cli <command> --help
 USAGE
 		;;
-	deploy|undeploy|status)
-		exec "$PY" -m netslice.topology "$cmd"
+	start|stop|start-controller|stop-controller|deploy|undeploy|status)
+		exec "$PY" -m netslice.topology "$cmd" "$@"
 		;;
 	json|ifmap)
 		sub=${cmd/ifmap/links}
-		exec "$PY" -m netslice.topology "$sub"
+		exec "$PY" -m netslice.topology "$sub" "$@"
 		;;
 	link-up|link-down)
 		exec "$PY" -m netslice.topology "$cmd" "$@"
 		;;
-	add|remove|flows|links|clear)
+	add|remove|flows|links|clear|state)
 		exec "$PY" -m netslice.client "$cmd" "$@"
 		;;
 	demo)
