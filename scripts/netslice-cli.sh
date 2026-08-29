@@ -4,8 +4,11 @@
 # Usage examples:
 #   netslice-cli deploy
 #   netslice-cli add h1 h4 5 --priority 2
+#   netslice-cli demo 2         run one demo
 #   netslice-cli flows
-#   netslice-cli serve
+#   netslice-cli start          controller in the background, then the lab
+#   netslice-cli stop           undeploy the lab and stop the controller
+#   netslice-cli serve          controller in the foreground, on this terminal
 set -eu
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -24,7 +27,48 @@ shift || true
 
 	case "$cmd" in
 	help|-h|--help)
-		echo "usage: netslice-cli <deploy|undeploy|status|json|ifmap|link-up|link-down|add|flows|links|remove|clear|serve|help>"
+		cat <<'USAGE'
+netslice-cli <command> [args]
+
+  Network slicing controller for an emulated Kathara lab.
+  Wraps `python -m netslice.topology` and `python -m netslice.client`.
+
+lab
+  start                 start the controller, deploy the lab, wait until ready
+  stop                  undeploy the lab and stop the controller
+  start-controller      start the controller in the background
+  stop-controller       stop the background controller
+  serve                 run the controller in the foreground, on this terminal
+  deploy                create the lab containers
+  undeploy              remove them
+  status                which containers are up
+
+flows
+  add <src> <dst> <mbps>   request a reservation, e.g. add h1 h4 5 --priority 2
+  flows                    what is allocated now
+  links                    per-link capacity and residual
+  state                    one snapshot: flows, links, switches, hosts
+  remove <flow-id>         release one flow
+  clear                    release everything
+
+demos
+  demo                  run all five, paced for a live audience
+  demo <n|name> ...     run some, e.g. demo 3   or   demo ttl rerouting
+  demo list             what is available
+  demo --no-pause       straight through, no waiting for enter
+  demo --quick          shorter iperf runs; faster, less accurate
+
+failure
+  link-down <a> <b>     break a core link, e.g. link-down s2 s3
+  link-up <a> <b>       restore it
+
+inspect
+  json                  the topology as JSON (no lab needed)
+  ifmap                 which ethN on which switch is which link
+
+  Dashboard: http://127.0.0.1:8080 while the controller runs.
+  Full options for any command:  netslice-cli <command> --help
+USAGE
 		;;
 	deploy|undeploy|status)
 		exec "$PY" -m netslice.topology "$cmd"
@@ -38,6 +82,9 @@ shift || true
 		;;
 	add|remove|flows|links|clear)
 		exec "$PY" -m netslice.client "$cmd" "$@"
+		;;
+	demo)
+		exec "$PY" "$ROOT/demo/run_all.py" "$@"
 		;;
 	serve)
 		exec "$PY" -m netslice.controller
