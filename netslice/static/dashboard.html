@@ -35,7 +35,9 @@
   main {
     flex: 1; min-height: 0;              /* min-height:0 or the grid refuses to shrink */
     display: grid; gap: 12px; padding: 12px;
-    grid-template-columns: minmax(400px, 1fr) minmax(370px, 460px);
+    /* The map column has no floor of its own: it should give way to the
+       controls, not fight them for width. */
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
     grid-template-rows: minmax(0, 1fr);
   }
 
@@ -166,13 +168,37 @@
      One screen is not achievable here, but the page itself still never
      scrolls, so the header stays put. */
   @media (max-width: 900px) {
-    main { grid-template-columns: 1fr; grid-template-rows: none; overflow-y: auto; }
-    #topology { min-height: 330px; }
-    #eventpanel { max-height: none; min-height: 150px; }
-    #flowpanel { min-height: 210px; }
+    /* Ordinary block flow, not grid inside flex inside grid.
+       Every panel above sizes itself against its parent: `flex: 1`,
+       `height: 100%`, `max-height: 34%`. Stacked, those parents stop having a
+       definite height, and a percentage or flex basis resolved against an
+       indefinite parent collapses to nothing: the map disappears and the
+       panels land on top of each other. Block boxes cannot do that, so the
+       narrow layout gives up the single-screen fit and just stacks. */
+    main { display: block; overflow-y: auto; }
+    .col, section { display: block; }
+    .col > section { margin-bottom: 12px; }
+    /* Drop every floor and ceiling meant for the fixed-height layout. */
+    #topology, #eventpanel, #formpanel, #flowpanel { min-height: 0; max-height: none; flex: none; }
+    #topology .body { display: block; }
+    /* Explicit height from the viewBox, so the map fills the width instead of
+       sitting letterboxed, and is capped so it cannot own the whole window. */
+    #topology .body svg { display: block; width: 100%; height: auto;
+                          aspect-ratio: 660 / 560; max-height: 62vh; }
+    /* Without a flex parent these two would grow with their content forever. */
+    #events { max-height: 40vh; }
+    #flows { max-height: 60vh; }
   }
 
-  /* Short viewport — a laptop panel, or a projector at 720p. Tighten the form
+  /* Wide but short: the columns stay side by side, so the max-width rule above
+     never fires, and the panel floors add up to more than the viewport. With
+     no scroll container the excess is clipped rather than squeezed. */
+  @media (max-height: 620px) {
+    main { overflow-y: auto; }
+    #flowpanel { min-height: 190px; }
+  }
+
+  /* Short viewport, such as a laptop panel or a projector at 720p. Tighten the form
      rather than let it crowd out the flow table. */
   @media (max-height: 780px) {
     form { gap: 7px; }
@@ -181,6 +207,16 @@
     .body { padding: 9px 11px; }
     .result { max-height: 96px; }
     #eventpanel { max-height: 28%; }
+  }
+
+  /* Narrow enough that two form fields side by side stop being readable. */
+  @media (max-width: 520px) {
+    main { padding: 8px; gap: 8px; }
+    header { padding: 8px 12px; gap: 8px; }
+    header .status { margin-left: 0; }
+    form { grid-template-columns: minmax(0, 1fr); }
+    .legend { gap: 9px; }
+    .legend span[style] { margin-left: 0 !important; }
   }
 </style>
 </head>
