@@ -85,35 +85,76 @@ def build_parser() -> argparse.ArgumentParser:
         ``remove``, ``clear``, ``flows``, ``links``, and ``state``
         subcommands.
     """
-    parser = argparse.ArgumentParser(prog="netslice.client", description=__doc__)
-    parser.add_argument("--host", default=DEFAULT_ADDR[0])
-    parser.add_argument("--port", type=int, default=DEFAULT_ADDR[1])
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(
+        prog="netslice.client",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Ask the controller to allocate flows, and inspect what it has "
+            "allocated.\n"
+            "Talks to the JSON control channel; the controller must be running."
+        ),
+        epilog=(
+            "examples:\n"
+            "  netslice-cli add h1 h4 5 --priority 2           reserve 5 Mbps, high priority\n"
+            "  netslice-cli add h2 h5 8 --policy shortest      route by hop count instead\n"
+            "  netslice-cli add h3 h6 9 --no-admission-control admit blindly\n"
+            "  netslice-cli flows                              what is allocated now\n"
+            "  netslice-cli remove f3                          release one flow\n"
+            "  netslice-cli clear                              release everything\n"
+            "\n"
+            "Every command prints the controller's raw JSON reply, so it pipes\n"
+            "straight into jq. A one-line human summary goes to stderr.\n"
+            "\n"
+            "Exit codes: 0 accepted, 1 the controller refused, 2 unreachable."
+        ),
+    )
+    parser.add_argument("--host", default=DEFAULT_ADDR[0],
+                        help="control channel host (default: %(default)s)")
+    parser.add_argument("--port", type=int, default=DEFAULT_ADDR[1],
+                        help="control channel port (default: %(default)s)")
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
-    add = sub.add_parser("add", help="request a flow allocation")
-    add.add_argument("src")
-    add.add_argument("dst")
-    add.add_argument("bandwidth_mbps", type=float)
-    add.add_argument("--priority", type=int, default=1, help="higher = more important")
-    add.add_argument("--idle-timeout", type=int, default=30)
-    add.add_argument("--hard-timeout", type=int, default=0)
-    add.add_argument("--proto", choices=["tcp", "udp"], default="tcp")
-    add.add_argument("--policy", choices=["widest", "shortest"], default="widest")
-    add.add_argument("--tie-break", choices=["fewest", "best_fit"], default="fewest")
-    add.add_argument("--no-preemption", action="store_true")
+    add = sub.add_parser(
+        "add", help="request a flow allocation",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Ask for bandwidth between two hosts. The controller picks the "
+                    "path, installs the rules, and reports the iperf3 pair to run.")
+    add.add_argument("src", help="source host, e.g. h1")
+    add.add_argument("dst", help="destination host, e.g. h4")
+    add.add_argument("bandwidth_mbps", type=float, help="bandwidth to reserve, in Mbps")
+    add.add_argument("--priority", type=int, default=1,
+                     help="higher wins; may preempt lower-priority flows")
+    add.add_argument("--idle-timeout", type=int, default=30,
+                     help="seconds of silence before the flow expires (0 = never)")
+    add.add_argument("--hard-timeout", type=int, default=0,
+                     help="seconds before the flow expires regardless of traffic "
+                          "(0 = never)")
+    add.add_argument("--proto", choices=["tcp", "udp"], default="tcp",
+                     help="transport protocol to match on")
+    add.add_argument("--policy", choices=["widest", "shortest"], default="widest",
+                     help="widest = most spare capacity, shortest = fewest hops")
+    add.add_argument("--tie-break", choices=["fewest", "best_fit"], default="fewest",
+                     help="between equally wide paths: fewest hops, or tightest fit")
+    add.add_argument("--no-preemption", action="store_true",
+                     help="fail rather than displace lower-priority flows")
     add.add_argument(
         "--no-admission-control",
         action="store_true",
-        help="accept regardless of network state ( baseline)",
+        help="accept regardless of network state, overbooking linksd",
     )
 
-    remove = sub.add_parser("remove", help="tear a flow down")
-    remove.add_argument("flow_id")
+    remove = sub.add_parser("remove", help="tear a flow down",
+                            description="Release one flow and free its capacity.")
+    remove.add_argument("flow_id", help="flow to release, e.g. f3")
 
-    sub.add_parser("clear", help="tear every flow down")
-    sub.add_parser("flows", help="list flows")
-    sub.add_parser("links", help="per-link capacity and residual")
-    sub.add_parser("state", help="full snapshot: flows, links, switches")
+    sub.add_parser("clear", help="tear every flow down",
+                   description="Release every flow the controller is holding.")
+    sub.add_parser("flows", help="list flows",
+                   description="Every flow: path, state, bandwidth, TTL, throughput.")
+    sub.add_parser("links", help="per-link capacity and residual",
+                   description="Capacity, reserved and residual Mbps for every link.")
+    sub.add_parser("state", help="full snapshot: flows, links, switches",
+                   description="One snapshot of everything: flows, links, switches, hosts.")
     return parser
 
 
