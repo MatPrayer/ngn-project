@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# netslice-cli - `python -m netslice.*` cli wrapper.
-#
-# Usage examples:
-#   netslice-cli deploy
-#   netslice-cli add h1 h4 5 --priority 2
-#   netslice-cli demo 2         run one demo
-#   netslice-cli flows
-#   netslice-cli start          controller in the background, then the lab
-#   netslice-cli stop           undeploy the lab and stop the controller
-#   netslice-cli serve          controller in the foreground, on this terminal
 set -eu
 
 SOURCE="${BASH_SOURCE[0]}"
