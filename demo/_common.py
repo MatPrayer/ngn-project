@@ -7,8 +7,8 @@ scripts are built around three rules:
    links before it does anything. A demo that only works if the previous one
    was run, in order, without mistakes, will fail on the day.
 2. **Say what is happening and why.** Each step prints the action, the result,
-   and one line on what it is demonstrating. The script should carry
-   the explanation, so the presenter can talk over it rather than recite it.
+   and the explanation. The script should carry the explanation, so the
+   presenter can talk over it rather than recite it.
 3. **Leave nothing behind.** Links come back up, flows are released, iperf
    servers are killed, including when a script is interrupted half way.
 
@@ -280,12 +280,11 @@ def path_of(flow_id: str) -> str:
 class Demo:
     """A numbered, narrated sequence of steps."""
 
-    def __init__(self, title: str, reference: str, description: str = ""):
+    def __init__(self, title: str, description: str = ""):
         """Initialise a numbered, narrated demo sequence.
 
         Args:
             title (str): Short title printed at the top of the demo.
-            reference (str): One line on what this demo demonstrates.
             description (str): Optional one-line description shown with the title.
         """
         parser = argparse.ArgumentParser(description=f"{title}, {description}")
@@ -300,7 +299,7 @@ class Demo:
         self._last_live = 0.0
 
         print()
-        print(f"  {bold(title)}   {dim(reference)}")
+        print(f"  {bold(title)}")
         print(dim("  " + "─" * 66))
 
 

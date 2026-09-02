@@ -36,7 +36,7 @@ def main():
     has no alternative going FAILED and recovering when the link is
     restored.
     """
-    demo = Demo("Link failure and rerouting", "link failure and rerouting")
+    demo = Demo("Link failure and rerouting")
     require_ready()
     reset()
 

@@ -27,7 +27,7 @@ def main():
     widest-path distributes load more evenly, leaving more headroom for
     future requests.
     """
-    demo = Demo("Widest path vs shortest path", "widest path against shortest path")
+    demo = Demo("Widest path vs shortest path")
     require_ready()
     reset()
 

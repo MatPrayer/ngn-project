@@ -56,7 +56,7 @@ def main():
     same flow kept alive by active traffic, and a hard timeout firing
     mid-transfer regardless of activity.
     """
-    demo = Demo("TTL, automatic release", "TTL and automatic release")
+    demo = Demo("TTL, automatic release")
     require_ready()
     reset()
 

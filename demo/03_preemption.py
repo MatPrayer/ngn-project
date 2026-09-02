@@ -24,7 +24,7 @@ def main():
     The victim is rerouted without preemption rights of its own, so
     preemption cannot cascade.
     """
-    demo = Demo("Preemption", "preemption")
+    demo = Demo("Preemption")
     require_ready()
     reset()
 

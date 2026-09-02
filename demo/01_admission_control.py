@@ -52,7 +52,7 @@ def main():
     admission control fewer flows are accepted but each meets its target;
     without it all are accepted but none does.
     """
-    demo = Demo("Admission control", "admission control, and the baseline with none")
+    demo = Demo("Admission control")
     require_ready()
     reset()
 
