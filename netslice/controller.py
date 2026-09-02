@@ -437,8 +437,7 @@ class NetSliceController(app_manager.OSKenApp):
             policy: ``"widest"`` or ``"shortest"``.
             allow_preemption: Whether lower-priority flows may be evicted.
             tie_break: Victim-selection tie-break strategy.
-            admission_control: Whether admission control is enforced (vs
-                the baseline).
+            admission_control: Whether admission control is enforced.
 
         Returns:
             dict: Controller reply, ``{"ok": True, "flow": ..., ...}`` on

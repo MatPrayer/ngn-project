@@ -85,7 +85,7 @@ def evaluate(
             interrupted flows) or ``"best_fit"`` (minimise wasted
             bandwidth).
         admission_control: If ``False``, every request is accepted on
-            nominal capacity regardless of reservations ( baseline).
+            nominal capacity regardless of reservations.
         now: Current monotonic time (seconds). Used to check hold-down
             windows. Defaults to :func:`time.time`.
 

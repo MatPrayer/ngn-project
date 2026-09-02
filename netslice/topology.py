@@ -499,7 +499,7 @@ def default_topology() -> Topology:
     """Build the default six-switch ring with three chords and six hosts.
 
     Capacities are tuned so shortest and widest path disagree for several
-    host pairs, giving the experiment something to show.
+    host pairs.
 
     Returns:
         Topology: The default topology.
