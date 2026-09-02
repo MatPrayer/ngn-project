@@ -4,7 +4,7 @@ set -eu
 ROOT=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 LAUNCHER="$ROOT/scripts/netslice-cli.sh"
 VENV="$ROOT/.venv"
-BIN=${NETSLICE_BIN:-"$HOME/bin"}
+BIN=$"$VENV/bin"
 LINK="$BIN/netslice-cli"
 
 find_python() {
