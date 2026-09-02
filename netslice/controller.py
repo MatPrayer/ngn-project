@@ -60,9 +60,6 @@ from netslice.topology import OF_PORT, default_topology, set_link
 ETH_TYPE_IP = 0x0800
 
 
-
-
-
 FLOW_PRIORITY = 100
 TABLE_MISS_PRIORITY = 0
 
@@ -70,9 +67,7 @@ CONTROL_ADDR = ("127.0.0.1", 9000)
 DASHBOARD_ADDR = ("127.0.0.1", 8080)
 
 
-
 EVENT_BUFFER = 500
-
 
 
 STATS_INTERVAL = 2.0
@@ -105,6 +100,22 @@ def _spawn_daemon(target, *args) -> threading.Thread:
 
 
 class NetSliceController(app_manager.OSKenApp):
+    """The OpenFlow layer: decisions in, flow table entries out.
+
+    Requests arrive from the control socket or the dashboard, are judged
+    against the network state, and become OpenFlow entries. Port and
+    flow-removal events travel the other way, becoming reroutes and capacity
+    releases. The only layer that needs live switches. Requests arrive from the control
+    socket or the dashboard, are judged against the network state, and become
+    OpenFlow entries; port and flow-removal events travel the other way and
+    become reroutes and capacity releases.
+
+    Every method that reads or writes the network state holds ``self.lock``,
+    reads included. os-ken runs on native OS threads here, so dashboard polls,
+    control commands and OpenFlow handlers genuinely run at the same time, and
+    no method holding the lock may call another that takes it.
+    """
+
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
@@ -126,24 +137,10 @@ class NetSliceController(app_manager.OSKenApp):
         self.datapaths: Dict[int, object] = {}
         self._by_cookie: Dict[int, str] = {}
 
-
-
-
-
-
         self.lock = hub.Semaphore()
-
-
-
-
-
-
-
-
 
         self.event_log: Deque[dict] = deque(maxlen=EVENT_BUFFER)
         self._event_seq = itertools.count(1)
-
 
         self.flow_stats: Dict[int, dict] = {}
 
@@ -151,8 +148,6 @@ class NetSliceController(app_manager.OSKenApp):
         self.control_server = _spawn_daemon(self._serve_control)
         self.stats_poller = _spawn_daemon(self._poll_flow_stats)
         self.dashboard_server = _spawn_daemon(dashboard.serve, self, DASHBOARD_ADDR)
-
-
 
     def record(self, kind: str, **fields) -> dict:
         """Append one event to the in-memory buffer and the on-disk log.
@@ -193,10 +188,7 @@ class NetSliceController(app_manager.OSKenApp):
             list[dict]: The most recent matching events.
         """
 
-
         return [e for e in list(self.event_log) if e["seq"] > seq][-limit:]
-
-
 
     def _poll_flow_stats(self) -> None:
         """Ask each ingress switch for flow counters every STATS_INTERVAL.
@@ -245,7 +237,6 @@ class NetSliceController(app_manager.OSKenApp):
                 continue
             flow = self.state.flows.get(flow_id)
 
-
             if flow is None or switch != flow.ingress:
                 continue
             if entry.match.get("ipv4_src") != self.topology.host_ip(flow.src):
@@ -255,15 +246,15 @@ class NetSliceController(app_manager.OSKenApp):
             moved = previous is None or entry.packet_count != previous["packets"]
             elapsed = now - previous["at"] if previous else 0.0
 
-
-
-
-
-            reset_counters = previous is not None and entry.byte_count < previous["bytes"]
+            reset_counters = (
+                previous is not None and entry.byte_count < previous["bytes"]
+            )
             if reset_counters:
                 throughput = previous["throughput_mbps"]
             elif previous and elapsed > 0:
-                throughput = round((entry.byte_count - previous["bytes"]) * 8 / elapsed / 1e6, 3)
+                throughput = round(
+                    (entry.byte_count - previous["bytes"]) * 8 / elapsed / 1e6, 3
+                )
             else:
                 throughput = 0.0
             self.flow_stats[entry.cookie] = {
@@ -271,7 +262,9 @@ class NetSliceController(app_manager.OSKenApp):
                 "bytes": entry.byte_count,
                 "duration_sec": entry.duration_sec,
                 "at": now,
-                "last_active": now if moved else (previous["last_active"] if previous else now),
+                "last_active": (
+                    now if moved else (previous["last_active"] if previous else now)
+                ),
                 "throughput_mbps": max(throughput, 0.0),
             }
 
@@ -295,8 +288,6 @@ class NetSliceController(app_manager.OSKenApp):
             throughput_mbps=stats["throughput_mbps"] if stats else None,
             bytes=stats["bytes"] if stats else None,
             idle_for_sec=idle_for,
-
-
             remaining_idle_sec=(
                 max(0.0, round(flow.idle_timeout - idle_for, 1))
                 if flow.idle_timeout and idle_for is not None
@@ -309,8 +300,6 @@ class NetSliceController(app_manager.OSKenApp):
             ),
         )
         return payload
-
-
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -327,10 +316,6 @@ class NetSliceController(app_manager.OSKenApp):
         self.datapaths[dp.id] = dp
         switch = self._switch_name(dp.id)
         self.record("switch_up", dpid=dp.id, switch=switch)
-
-
-
-
 
         self._wipe(dp)
         self._install_table_miss(dp)
@@ -403,8 +388,6 @@ class NetSliceController(app_manager.OSKenApp):
             )
         )
 
-
-
     def request_flow(
         self,
         src: str,
@@ -445,7 +428,10 @@ class NetSliceController(app_manager.OSKenApp):
         """
         hosts = self.topology.hosts
         if src not in hosts or dst not in hosts:
-            return {"ok": False, "reason": f"unknown host: {src if src not in hosts else dst}"}
+            return {
+                "ok": False,
+                "reason": f"unknown host: {src if src not in hosts else dst}",
+            }
         if src == dst:
             return {"ok": False, "reason": "source and destination are the same host"}
         if bandwidth_mbps <= 0:
@@ -469,26 +455,38 @@ class NetSliceController(app_manager.OSKenApp):
             if not decision.accepted:
                 self.record(
                     "request_rejected",
-                    src=src, dst=dst, bandwidth_mbps=bandwidth_mbps,
-                    priority=priority, reason=decision.reason,
+                    src=src,
+                    dst=dst,
+                    bandwidth_mbps=bandwidth_mbps,
+                    priority=priority,
+                    reason=decision.reason,
                 )
                 return {"ok": False, "reason": decision.reason}
 
             missing = [s for s in decision.path.switches if self._datapath(s) is None]
             if missing:
-                self.record("request_rejected", src=src, dst=dst, reason=f"switches offline: {missing}")
-                return {"ok": False, "reason": f"switches not connected: {', '.join(missing)}"}
+                self.record(
+                    "request_rejected",
+                    src=src,
+                    dst=dst,
+                    reason=f"switches offline: {missing}",
+                )
+                return {
+                    "ok": False,
+                    "reason": f"switches not connected: {', '.join(missing)}",
+                }
 
             flow = self.state.new_flow(
-                src, dst, bandwidth_mbps, priority,
+                src,
+                dst,
+                bandwidth_mbps,
+                priority,
                 idle_timeout=idle_timeout,
                 hard_timeout=hard_timeout,
                 ip_proto=IPPROTO_UDP if proto.lower() == "udp" else IPPROTO_TCP,
                 policy=policy,
                 tie_break=tie_break,
             )
-
-
 
             victims = []
             for flow_id in decision.victims:
@@ -497,8 +495,10 @@ class NetSliceController(app_manager.OSKenApp):
                 victims.append((victim, old_path))
                 self.record(
                     "preempted",
-                    flow_id=flow_id, by=flow.flow_id,
-                    priority=victim.priority, bandwidth_mbps=victim.bandwidth_mbps,
+                    flow_id=flow_id,
+                    by=flow.flow_id,
+                    priority=victim.priority,
+                    bandwidth_mbps=victim.bandwidth_mbps,
                     path=list(old_path),
                 )
 
@@ -510,19 +510,23 @@ class NetSliceController(app_manager.OSKenApp):
 
             self.record(
                 "flow_admitted",
-                flow_id=flow.flow_id, src=src, dst=dst,
-                bandwidth_mbps=bandwidth_mbps, priority=priority,
-                tp_dst=flow.tp_dst, path=list(flow.path),
+                flow_id=flow.flow_id,
+                src=src,
+                dst=dst,
+                bandwidth_mbps=bandwidth_mbps,
+                priority=priority,
+                tp_dst=flow.tp_dst,
+                path=list(flow.path),
                 bottleneck_mbps=decision.path.to_dict()["bottleneck_mbps"],
-                policy=policy, preemption_used=decision.preemption_used,
+                policy=policy,
+                preemption_used=decision.preemption_used,
                 forced=decision.forced,
             )
 
-
-
             for victim, old_path in victims:
                 self._replace_path(
-                    victim, old_path,
+                    victim,
+                    old_path,
                     allow_preemption=False,
                     cause=f"preempted by {flow.flow_id}",
                 )
@@ -576,7 +580,10 @@ class NetSliceController(app_manager.OSKenApp):
             dict: ``{"ok": True, "flows": [...]}``.
         """
         with self.lock:
-            return {"ok": True, "flows": [self._flow_view(f) for f in self.state.flows.values()]}
+            return {
+                "ok": True,
+                "flows": [self._flow_view(f) for f in self.state.flows.values()],
+            }
 
     def link_status(self) -> dict:
         """Report per-link capacity, residual, and membership.
@@ -595,7 +602,8 @@ class NetSliceController(app_manager.OSKenApp):
         Kathara exec underneath is slow enough that holding the lock across it
         would stall every OpenFlow handler and dashboard poll. The controller
         learns the outcome the same way it learns about a real failure, from
-        the ``OFPT_PORT_STATUS`` the switch sends back (D14).
+        the ``OFPT_PORT_STATUS`` the switch sends back. Nothing here touches
+        the link's ``down`` flag directly.
 
         Args:
             link_id: Link identifier, as in ``"s2--s3"``.
@@ -642,7 +650,10 @@ class NetSliceController(app_manager.OSKenApp):
                 "flows": [self._flow_view(f) for f in self.state.flows.values()],
                 "links": self.state.utilisation(),
                 "switches": {
-                    s: {"dpid": self.topology.dpid(s), "connected": self._datapath(s) is not None}
+                    s: {
+                        "dpid": self.topology.dpid(s),
+                        "connected": self._datapath(s) is not None,
+                    }
                     for s in self.topology.switches
                 },
                 "hosts": {
@@ -685,8 +696,6 @@ class NetSliceController(app_manager.OSKenApp):
             "server_on": flow.dst,
             "client_on": flow.src,
         }
-
-
 
     def _switch_name(self, dpid: int) -> Optional[str]:
         """Map a datapath ID to a switch name.
@@ -753,8 +762,6 @@ class NetSliceController(app_manager.OSKenApp):
             **{f"{port_field}_dst": flow.tp_dst},
         )
 
-
-
         reverse = parser.OFPMatch(
             eth_type=ETH_TYPE_IP,
             ipv4_src=dst_ip,
@@ -784,9 +791,13 @@ class NetSliceController(app_manager.OSKenApp):
             out_link = self.topology.access_link(flow.dst)
         else:
             out_link = self._link_between(switch, flow.path[index + 1])
-        return self.topology.ofport(switch, in_link), self.topology.ofport(switch, out_link)
+        return self.topology.ofport(switch, in_link), self.topology.ofport(
+            switch, out_link
+        )
 
-    def _install_flow(self, flow: FlowEntry, only: Optional[Sequence[str]] = None) -> None:
+    def _install_flow(
+        self, flow: FlowEntry, only: Optional[Sequence[str]] = None
+    ) -> None:
         """Push a flow's OpenFlow entries, plus the ingress meter.
 
         OFPFC_ADD with the same match and priority replaces an existing entry,
@@ -807,8 +818,12 @@ class NetSliceController(app_manager.OSKenApp):
                 continue
             dp = self._datapath(switch)
             if dp is None:
-                self.record("install_skipped", flow_id=flow.flow_id, switch=switch,
-                            reason="datapath not connected")
+                self.record(
+                    "install_skipped",
+                    flow_id=flow.flow_id,
+                    switch=switch,
+                    reason="datapath not connected",
+                )
                 continue
             ofp, parser = dp.ofproto, dp.ofproto_parser
             in_port, out_port = self._ports_at(flow, index)
@@ -820,7 +835,9 @@ class NetSliceController(app_manager.OSKenApp):
             ):
                 instructions = []
                 if metered:
-                    instructions.append(parser.OFPInstructionMeter(flow.cookie, ofp.OFPIT_METER))
+                    instructions.append(
+                        parser.OFPInstructionMeter(flow.cookie, ofp.OFPIT_METER)
+                    )
                 instructions.append(
                     parser.OFPInstructionActions(
                         ofp.OFPIT_APPLY_ACTIONS, [parser.OFPActionOutput(out)]
@@ -834,8 +851,6 @@ class NetSliceController(app_manager.OSKenApp):
                         match=match,
                         idle_timeout=flow.idle_timeout,
                         hard_timeout=flow.hard_timeout,
-
-
                         flags=ofp.OFPFF_SEND_FLOW_REM,
                         instructions=instructions,
                     )
@@ -855,11 +870,15 @@ class NetSliceController(app_manager.OSKenApp):
         if dp is None:
             return
         ofp, parser = dp.ofproto, dp.ofproto_parser
-        band = parser.OFPMeterBandDrop(rate=int(flow.bandwidth_mbps * 1000), burst_size=0)
+        band = parser.OFPMeterBandDrop(
+            rate=int(flow.bandwidth_mbps * 1000), burst_size=0
+        )
 
-
-
-        dp.send_msg(parser.OFPMeterMod(datapath=dp, command=ofp.OFPMC_DELETE, meter_id=flow.cookie))
+        dp.send_msg(
+            parser.OFPMeterMod(
+                datapath=dp, command=ofp.OFPMC_DELETE, meter_id=flow.cookie
+            )
+        )
         dp.send_msg(
             parser.OFPMeterMod(
                 datapath=dp,
@@ -870,7 +889,9 @@ class NetSliceController(app_manager.OSKenApp):
             )
         )
 
-    def _delete_flow(self, flow: FlowEntry, switches: Sequence[str], drop_meter: bool = True) -> None:
+    def _delete_flow(
+        self, flow: FlowEntry, switches: Sequence[str], drop_meter: bool = True
+    ) -> None:
         """Remove a flow's entries from the given switches, by cookie.
 
         Deleting by cookie handles both directions in one message and cannot
@@ -908,8 +929,6 @@ class NetSliceController(app_manager.OSKenApp):
                         datapath=dp, command=ofp.OFPMC_DELETE, meter_id=flow.cookie
                     )
                 )
-
-
 
     def _replace_path(
         self,
@@ -966,20 +985,20 @@ class NetSliceController(app_manager.OSKenApp):
             self._delete_flow(flow, old_path)
             self.record(
                 "reroute_failed",
-                flow_id=flow.flow_id, cause=cause, reason=reason,
+                flow_id=flow.flow_id,
+                cause=cause,
+                reason=reason,
                 old_path=list(old_path),
             )
             return False
-
-
-
 
         nested = []
         for flow_id in decision.victims:
             victim_path, _ = self.state.release(flow_id, FlowState.PREEMPTED)
             nested.append((self.state.flows[flow_id], victim_path))
-            self.record("preempted", flow_id=flow_id, by=flow.flow_id,
-                        path=list(victim_path))
+            self.record(
+                "preempted", flow_id=flow_id, by=flow.flow_id, path=list(victim_path)
+            )
 
         self.state.reserve(flow, decision.path.switches, decision.path.links)
         flow.reroutes += 1
@@ -989,20 +1008,21 @@ class NetSliceController(app_manager.OSKenApp):
         self.state.mark_hold_down(flow.flow_id)
         self.record(
             "rerouted",
-            flow_id=flow.flow_id, cause=cause,
-            old_path=list(old_path), new_path=list(flow.path),
+            flow_id=flow.flow_id,
+            cause=cause,
+            old_path=list(old_path),
+            new_path=list(flow.path),
             preempted=list(decision.victims),
         )
 
         for victim, victim_path in nested:
             self._replace_path(
-                victim, victim_path,
+                victim,
+                victim_path,
                 allow_preemption=False,
                 cause=f"preempted by {flow.flow_id} during reroute",
             )
         return True
-
-
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -1031,8 +1051,11 @@ class NetSliceController(app_manager.OSKenApp):
 
         down = bool(msg.desc.state & ofp.OFPPS_LINK_DOWN)
         self.record(
-            "port_status", switch=switch, port=msg.desc.port_no,
-            link=link_id, link_down=down,
+            "port_status",
+            switch=switch,
+            port=msg.desc.port_no,
+            link=link_id,
+            link_down=down,
         )
         if down:
             self._handle_link_down(link_id)
@@ -1051,15 +1074,15 @@ class NetSliceController(app_manager.OSKenApp):
             if link_id in self.state.down_links:
                 return
             affected = self.state.set_link_down(link_id)
-            self.record("link_down", link=link_id,
-                        affected=[f.flow_id for f in affected])
-
-
+            self.record(
+                "link_down", link=link_id, affected=[f.flow_id for f in affected]
+            )
 
             for flow in affected:
                 old_path, _ = self.state.release(flow.flow_id, FlowState.PREEMPTED)
-                self._replace_path(flow, old_path, allow_preemption=True,
-                                   cause=f"link {link_id} down")
+                self._replace_path(
+                    flow, old_path, allow_preemption=True, cause=f"link {link_id} down"
+                )
 
     def _handle_link_up(self, link_id: str) -> None:
         """Handle a link restoration by retrying FAILED flows only.
@@ -1075,14 +1098,15 @@ class NetSliceController(app_manager.OSKenApp):
             if link_id not in self.state.down_links:
                 return
             self.state.set_link_up(link_id)
-            failed = [f for f in self.state.flows.values() if f.state is FlowState.FAILED]
+            failed = [
+                f for f in self.state.flows.values() if f.state is FlowState.FAILED
+            ]
             failed.sort(key=lambda f: (-f.priority, -f.bandwidth_mbps))
             self.record("link_up", link=link_id, retrying=[f.flow_id for f in failed])
             for flow in failed:
-                self._replace_path(flow, (), allow_preemption=False,
-                                   cause=f"link {link_id} restored")
-
-
+                self._replace_path(
+                    flow, (), allow_preemption=False, cause=f"link {link_id} restored"
+                )
 
     @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def flow_removed_handler(self, ev):
@@ -1101,7 +1125,9 @@ class NetSliceController(app_manager.OSKenApp):
 
             return
 
-        reason = "IDLE_TIMEOUT" if msg.reason == ofp.OFPRR_IDLE_TIMEOUT else "HARD_TIMEOUT"
+        reason = (
+            "IDLE_TIMEOUT" if msg.reason == ofp.OFPRR_IDLE_TIMEOUT else "HARD_TIMEOUT"
+        )
         switch = self._switch_name(msg.datapath.id)
         flow_id = self._by_cookie.get(msg.cookie)
         if flow_id is None:
@@ -1112,10 +1138,10 @@ class NetSliceController(app_manager.OSKenApp):
             if flow is None or not flow.holds_capacity():
                 return
 
-
-
             if switch != flow.ingress:
-                self.record("expiry_ignored", flow_id=flow_id, switch=switch, reason=reason)
+                self.record(
+                    "expiry_ignored", flow_id=flow_id, switch=switch, reason=reason
+                )
                 return
 
             path, _ = self.state.release(flow_id, FlowState.EXPIRED)
@@ -1123,12 +1149,12 @@ class NetSliceController(app_manager.OSKenApp):
             self._by_cookie.pop(flow.cookie, None)
             self.record(
                 "flow_expired",
-                flow_id=flow_id, reason=reason, path=list(path),
+                flow_id=flow_id,
+                reason=reason,
+                path=list(path),
                 duration_sec=msg.duration_sec,
                 bandwidth_mbps=flow.bandwidth_mbps,
             )
-
-
 
     def _serve_control(self) -> None:
         """Serve the line-oriented JSON control channel.
@@ -1202,7 +1228,10 @@ class NetSliceController(app_manager.OSKenApp):
         if command == "topology":
             return self.topology_view()
         if command == "events":
-            return {"ok": True, "events": self.events_since(int(request.get("since", 0)))}
+            return {
+                "ok": True,
+                "events": self.events_since(int(request.get("since", 0))),
+            }
         return {"ok": False, "reason": f"unknown command {command!r}"}
 
 
@@ -1241,10 +1270,15 @@ def main() -> int:
 
     busy = _ports_in_use()
     if busy:
-        print("cannot start: something is already listening on\n" + "\n".join(busy),
-              file=sys.stderr)
-        print("\nanother controller is probably running. Stop it with:\n"
-              "  pkill -f 'netslice.controller'", file=sys.stderr)
+        print(
+            "cannot start: something is already listening on\n" + "\n".join(busy),
+            file=sys.stderr,
+        )
+        print(
+            "\nanother controller is probably running. Stop it with:\n"
+            "  pkill -f 'netslice.controller'",
+            file=sys.stderr,
+        )
         return 1
 
     log.early_init_log(20)
@@ -1255,10 +1289,12 @@ def main() -> int:
     except AttributeError as exc:
         if "'HubThread' object has no attribute 'kill'" not in str(exc):
             raise
-        print("\ncontroller stopped. The AttributeError above comes from "
-              "os-ken's own shutdown path, not from netslice, if this was "
-              "not intentional, the real cause is logged before it.",
-              file=sys.stderr)
+        print(
+            "\ncontroller stopped. The AttributeError above comes from "
+            "os-ken's own shutdown path, not from netslice, if this was "
+            "not intentional, the real cause is logged before it.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

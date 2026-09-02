@@ -27,6 +27,23 @@ from netslice.state import EPS, FlowEntry, NetworkState
 
 @dataclass(frozen=True)
 class Decision:
+    """The verdict on one flow request, and what acting on it would cost.
+
+    Produced by :func:`evaluate` and never acted on there: the caller decides
+    whether to carry it out. ``victims`` names the flows that would have to be
+    released first, so a decision can be inspected, logged, or discarded
+    without the network having changed.
+
+    Attributes:
+        accepted: Whether the request can be placed.
+        path: Where it would go, or None if it cannot be placed.
+        victims: Flow IDs that must be released first, worst candidate first.
+        preemption_used: Whether placing it depends on evicting *victims*.
+        forced: Whether it was admitted with admission control disabled, and
+            so may have overbooked a link.
+        reason: One line explaining the verdict, for the operator.
+    """
+
     accepted: bool
     path: Optional[Path] = None
     victims: Tuple[str, ...] = ()
@@ -96,23 +113,30 @@ def evaluate(
 
     if src_switch == dst_switch:
 
-
-        return Decision(True, Path((src_switch,), (), float("inf")), reason="same switch")
+        return Decision(
+            True, Path((src_switch,), (), float("inf")), reason="same switch"
+        )
 
     if not admission_control:
 
-
         path = routing.find_path(
-            policy, adj, src_switch, dst_switch,
-            width=lambda link_id: 0.0 if link_id in state.down_links else state.capacity[link_id],
+            policy,
+            adj,
+            src_switch,
+            dst_switch,
+            width=lambda link_id: (
+                0.0 if link_id in state.down_links else state.capacity[link_id]
+            ),
         )
         if path is None:
             return Decision(False, reason="no path (topology partitioned)")
         return Decision(True, path, forced=True, reason="admission control disabled")
 
-
     path = routing.find_path(
-        policy, adj, src_switch, dst_switch,
+        policy,
+        adj,
+        src_switch,
+        dst_switch,
         width=state.available,
         minimum=bandwidth_mbps,
     )
@@ -125,9 +149,11 @@ def evaluate(
             reason=f"no path with {bandwidth_mbps} Mbps of residual capacity",
         )
 
-
     path = routing.find_path(
-        policy, adj, src_switch, dst_switch,
+        policy,
+        adj,
+        src_switch,
+        dst_switch,
         width=lambda link_id: state.preemptable_capacity(link_id, priority, now),
         minimum=bandwidth_mbps,
     )
@@ -140,11 +166,8 @@ def evaluate(
             ),
         )
 
-
     chosen: Dict[str, FlowEntry] = {}
     for link_id in path.links:
-
-
 
         already_freed = sum(
             v.bandwidth_mbps for v in chosen.values() if link_id in v.links
@@ -158,8 +181,6 @@ def evaluate(
             now=now,
         )
         if picks is None:
-
-
 
             return Decision(
                 False,

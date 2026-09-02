@@ -30,7 +30,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 
 
-
 RUN_DIR = ROOT / ".run"
 CONTROLLER_PID = RUN_DIR / "controller.pid"
 CONTROLLER_LOG = RUN_DIR / "controller.log"
@@ -48,10 +47,7 @@ def _script(name: str) -> str:
     return (SCRIPTS / name).read_text() + "\n"
 
 
-
-
 ACCESS_CAPACITY_MBPS = 100.0
-
 
 
 _CONTROLLER_HOST: Optional[str] = None
@@ -119,7 +115,7 @@ def controller_host_override() -> str:
     host = controller_host()
     if not host:
         return ""
-    return f"# Host as seen from a container (Docker Desktop); see D20.\nGW={host}\n"
+    return f"# The host, as a container on Docker Desktop sees it.\nGW={host}\n"
 
 
 @dataclass(frozen=True)
@@ -136,14 +132,19 @@ class Link:
 
     @property
     def id(self) -> str:
-        """Endpoint-order-independent identifier, so `residual[link_id]` is the
-        same entry no matter which direction a lookup comes from."""
+        """Identifier that does not depend on endpoint order.
+
+        A lookup finds the same entry from either end of the link.
+        """
         lo, hi = sorted((self.a, self.b))
         return f"{lo}--{hi}"
 
     @property
     def domain(self) -> str:
-        """Kathara collision domain name. Must be short and alphanumeric."""
+        """Kathara collision domain name.
+
+        Must be short and alphanumeric to satisfy Kathara.
+        """
         lo, hi = sorted((self.a, self.b))
         return f"{lo}{hi}"
 
@@ -168,18 +169,28 @@ class Link:
 
 @dataclass
 class Topology:
+    """The network's shape, and the single source of truth about it.
+
+    The lab builder and the controller both read this object, so interface
+    numbering, OpenFlow port numbers, capacities and addresses cannot drift
+    apart: what the containers are configured with is what the controller
+    believes. Everything else here is derived from these three fields.
+
+    Attributes:
+        switches: Switch names, in the order that fixes their datapath IDs.
+        hosts: Host name to the switch it attaches to.
+        links: Every link, core and access alike.
+    """
+
     switches: List[str]
     hosts: Dict[str, str]
     links: List[Link]
-
 
     _ifaces: Dict[str, List[Tuple[int, Link]]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Fill in derived interface-index tables after construction."""
         self._assign_interfaces()
-
-
 
     def host_index(self, host: str) -> int:
         """Return the deterministic index of a host.
@@ -248,8 +259,6 @@ class Topology:
             IndexError: If *dpid* is out of range for this topology.
         """
         return self.switches[dpid - 1]
-
-
 
     def _assign_interfaces(self) -> None:
         """Assign each device's links to consecutive interface indexes.
@@ -370,8 +379,6 @@ class Topology:
         """
         return self._ifaces[host][0][1]
 
-
-
     def _switch_startup(self, switch: str) -> str:
         """Render the startup script for a switch container.
 
@@ -418,8 +425,6 @@ class Topology:
             f"{self.access_link(host).capacity_mbps:g} {peers}\n"
         )
 
-
-
     def build_lab(self) -> Lab:
         """Construct a Kathara Lab object representing this topology.
 
@@ -436,7 +441,6 @@ class Topology:
         for host in self.hosts:
             lab.get_or_new_machine(host, image=IMAGE)
 
-
         for device, entries in self._ifaces.items():
             for index, link in entries:
                 mac = self.host_mac(device) if device in self.hosts else None
@@ -452,8 +456,6 @@ class Topology:
             lab.create_file_from_string(self._host_startup(host), f"{host}.startup")
 
         return lab
-
-
 
     def to_dict(self) -> dict:
         """Serialize the topology to a JSON-safe dictionary.
@@ -505,14 +507,12 @@ def default_topology() -> Topology:
         Topology: The default topology.
     """
     links = [
-
         Link("s1", "s2", 10),
         Link("s2", "s3", 10),
         Link("s3", "s4", 10),
         Link("s4", "s5", 10),
         Link("s5", "s6", 10),
         Link("s6", "s1", 10),
-
         Link("s1", "s4", 4),
         Link("s2", "s5", 20),
         Link("s3", "s6", 6),
@@ -523,9 +523,6 @@ def default_topology() -> Topology:
         Link(host, switch, ACCESS_CAPACITY_MBPS) for host, switch in hosts.items()
     ]
     return Topology(switches=switches, hosts=hosts, links=links)
-
-
-
 
 
 def deploy(topology: Optional[Topology] = None) -> Tuple[Topology, Lab]:
@@ -602,7 +599,6 @@ def set_link(a: str, b: str, up: bool) -> Tuple[str, int]:
         i for i, candidate in topology.interfaces(a) if candidate.id == link.id
     )
     state = "up" if up else "down"
-
 
     cmd = f"set -- eth{index} {state}\n" + (SCRIPTS / "link_state.sh").read_text()
     Kathara.get_instance().exec(
@@ -714,7 +710,10 @@ def start_controller(timeout: float = 25.0) -> Tuple[bool, str]:
                 f"see {CONTROLLER_LOG}"
             )
         if controller_responding():
-            return True, f"controller running (pid {process.pid}), log: {CONTROLLER_LOG}"
+            return (
+                True,
+                f"controller running (pid {process.pid}), log: {CONTROLLER_LOG}",
+            )
         time.sleep(0.3)
     return False, f"controller did not answer within {timeout:g}s; see {CONTROLLER_LOG}"
 
@@ -851,34 +850,61 @@ def main(argv=None) -> int:
         ),
     )
     sub = parser.add_subparsers(dest="action", required=True, metavar="<command>")
-    sub.add_parser("start", help="start the controller, then deploy the lab and wait",
-                   description="Start the controller in the background, deploy the lab, "
-                               "and wait until every switch has connected. Safe to "
-                               "re-run: whatever is already up is left alone.")
-    sub.add_parser("start-controller", help="start the controller in the background",
-                   description="Start the controller detached, logging to "
-                               ".run/controller.log. Does not touch the lab.")
-    sub.add_parser("stop-controller", help="stop the background controller",
-                   description="Stop the controller started by start/start-controller. "
-                               "One started any other way is reported, not killed.")
-    sub.add_parser("stop", help="undeploy the lab and stop the controller",
-                   description="The reverse of start: remove the lab containers, then "
-                                "stop the controller. Safe to re-run, anything already "
-                               "down is reported and skipped.")
-    sub.add_parser("deploy", help="start the containers",
-                   description="Create and start the lab containers. The controller "
-                               "should already be running, or the switches waste a "
-                               "retry interval finding it.")
-    sub.add_parser("undeploy", help="remove the containers",
-                   description="Stop and remove every lab container.")
-    sub.add_parser("status", help="what is running",
-                   description="List the lab containers that are currently up.")
-    sub.add_parser("json", help="print the topology and exit",
-                   description="Dump the topology as JSON: switches, hosts, links, "
-                               "capacities, addresses. Needs no lab.")
-    sub.add_parser("links", help="per-switch interface map: which ethN is which link",
-                   description="Which interface on which switch carries which link, and "
-                               "the OpenFlow port number for each. Needs no lab.")
+    sub.add_parser(
+        "start",
+        help="start the controller, then deploy the lab and wait",
+        description="Start the controller in the background, deploy the lab, "
+        "and wait until every switch has connected. Safe to "
+        "re-run: whatever is already up is left alone.",
+    )
+    sub.add_parser(
+        "start-controller",
+        help="start the controller in the background",
+        description="Start the controller detached, logging to "
+        ".run/controller.log. Does not touch the lab.",
+    )
+    sub.add_parser(
+        "stop-controller",
+        help="stop the background controller",
+        description="Stop the controller started by start/start-controller. "
+        "One started any other way is reported, not killed.",
+    )
+    sub.add_parser(
+        "stop",
+        help="undeploy the lab and stop the controller",
+        description="The reverse of start: remove the lab containers, then "
+        "stop the controller. Safe to re-run, anything already "
+        "down is reported and skipped.",
+    )
+    sub.add_parser(
+        "deploy",
+        help="start the containers",
+        description="Create and start the lab containers. The controller "
+        "should already be running, or the switches waste a "
+        "retry interval finding it.",
+    )
+    sub.add_parser(
+        "undeploy",
+        help="remove the containers",
+        description="Stop and remove every lab container.",
+    )
+    sub.add_parser(
+        "status",
+        help="what is running",
+        description="List the lab containers that are currently up.",
+    )
+    sub.add_parser(
+        "json",
+        help="print the topology and exit",
+        description="Dump the topology as JSON: switches, hosts, links, "
+        "capacities, addresses. Needs no lab.",
+    )
+    sub.add_parser(
+        "links",
+        help="per-switch interface map: which ethN is which link",
+        description="Which interface on which switch carries which link, and "
+        "the OpenFlow port number for each. Needs no lab.",
+    )
 
     for name, verb in (("link-down", "break"), ("link-up", "restore")):
         p = sub.add_parser(
@@ -910,7 +936,6 @@ def main(argv=None) -> int:
 
     if args.action == "stop":
 
-
         if running_machines():
             undeploy()
             print(f"lab '{LAB_NAME}' removed")
@@ -919,13 +944,9 @@ def main(argv=None) -> int:
         ok, message = stop_controller()
         print(message)
 
-
-
         return 0 if ok or not controller_responding() else 1
 
     if args.action == "start":
-
-
 
         if controller_responding():
             print("controller already running")

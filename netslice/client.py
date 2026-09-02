@@ -108,53 +108,103 @@ def build_parser() -> argparse.ArgumentParser:
             "Exit codes: 0 accepted, 1 the controller refused, 2 unreachable."
         ),
     )
-    parser.add_argument("--host", default=DEFAULT_ADDR[0],
-                        help="control channel host (default: %(default)s)")
-    parser.add_argument("--port", type=int, default=DEFAULT_ADDR[1],
-                        help="control channel port (default: %(default)s)")
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_ADDR[0],
+        help="control channel host (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_ADDR[1],
+        help="control channel port (default: %(default)s)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     add = sub.add_parser(
-        "add", help="request a flow allocation",
+        "add",
+        help="request a flow allocation",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Ask for bandwidth between two hosts. The controller picks the "
-                    "path, installs the rules, and reports the iperf3 pair to run.")
+        "path, installs the rules, and reports the iperf3 pair to run.",
+    )
     add.add_argument("src", help="source host, e.g. h1")
     add.add_argument("dst", help="destination host, e.g. h4")
     add.add_argument("bandwidth_mbps", type=float, help="bandwidth to reserve, in Mbps")
-    add.add_argument("--priority", type=int, default=1,
-                     help="higher wins; may preempt lower-priority flows")
-    add.add_argument("--idle-timeout", type=int, default=30,
-                     help="seconds of silence before the flow expires (0 = never)")
-    add.add_argument("--hard-timeout", type=int, default=0,
-                     help="seconds before the flow expires regardless of traffic "
-                          "(0 = never)")
-    add.add_argument("--proto", choices=["tcp", "udp"], default="tcp",
-                     help="transport protocol to match on")
-    add.add_argument("--policy", choices=["widest", "shortest"], default="widest",
-                     help="widest = most spare capacity, shortest = fewest hops")
-    add.add_argument("--tie-break", choices=["fewest", "best_fit"], default="fewest",
-                     help="between equally wide paths: fewest hops, or tightest fit")
-    add.add_argument("--no-preemption", action="store_true",
-                     help="fail rather than displace lower-priority flows")
+    add.add_argument(
+        "--priority",
+        type=int,
+        default=1,
+        help="higher wins; may preempt lower-priority flows",
+    )
+    add.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=30,
+        help="seconds of silence before the flow expires (0 = never)",
+    )
+    add.add_argument(
+        "--hard-timeout",
+        type=int,
+        default=0,
+        help="seconds before the flow expires regardless of traffic " "(0 = never)",
+    )
+    add.add_argument(
+        "--proto",
+        choices=["tcp", "udp"],
+        default="tcp",
+        help="transport protocol to match on",
+    )
+    add.add_argument(
+        "--policy",
+        choices=["widest", "shortest"],
+        default="widest",
+        help="widest = most spare capacity, shortest = fewest hops",
+    )
+    add.add_argument(
+        "--tie-break",
+        choices=["fewest", "best_fit"],
+        default="fewest",
+        help="between equally wide paths: fewest hops, or tightest fit",
+    )
+    add.add_argument(
+        "--no-preemption",
+        action="store_true",
+        help="fail rather than displace lower-priority flows",
+    )
     add.add_argument(
         "--no-admission-control",
         action="store_true",
         help="accept regardless of network state, overbooking linksd",
     )
 
-    remove = sub.add_parser("remove", help="tear a flow down",
-                            description="Release one flow and free its capacity.")
+    remove = sub.add_parser(
+        "remove",
+        help="tear a flow down",
+        description="Release one flow and free its capacity.",
+    )
     remove.add_argument("flow_id", help="flow to release, e.g. f3")
 
-    sub.add_parser("clear", help="tear every flow down",
-                   description="Release every flow the controller is holding.")
-    sub.add_parser("flows", help="list flows",
-                   description="Every flow: path, state, bandwidth, TTL, throughput.")
-    sub.add_parser("links", help="per-link capacity and residual",
-                   description="Capacity, reserved and residual Mbps for every link.")
-    sub.add_parser("state", help="full snapshot: flows, links, switches",
-                   description="One snapshot of everything: flows, links, switches, hosts.")
+    sub.add_parser(
+        "clear",
+        help="tear every flow down",
+        description="Release every flow the controller is holding.",
+    )
+    sub.add_parser(
+        "flows",
+        help="list flows",
+        description="Every flow: path, state, bandwidth, TTL, throughput.",
+    )
+    sub.add_parser(
+        "links",
+        help="per-link capacity and residual",
+        description="Capacity, reserved and residual Mbps for every link.",
+    )
+    sub.add_parser(
+        "state",
+        help="full snapshot: flows, links, switches",
+        description="One snapshot of everything: flows, links, switches, hosts.",
+    )
     return parser
 
 
@@ -194,7 +244,10 @@ def main(argv=None) -> int:
     try:
         reply = send(request, (args.host, args.port))
     except OSError as exc:
-        print(f"cannot reach controller on {args.host}:{args.port}: {exc}", file=sys.stderr)
+        print(
+            f"cannot reach controller on {args.host}:{args.port}: {exc}",
+            file=sys.stderr,
+        )
         return 2
 
     print(json.dumps(reply, indent=2))

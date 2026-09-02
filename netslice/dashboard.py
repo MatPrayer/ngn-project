@@ -50,7 +50,6 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 STATIC = Path(__file__).resolve().parent / "static"
 
 
-
 FLOW_FIELDS = {
     "src": str,
     "dst": str,
@@ -123,14 +122,14 @@ def _json_response(start_response, payload, status="200 OK"):
         list[bytes]: The response body as a single JSON byte string.
     """
     body = json.dumps(payload, default=str).encode()
-    start_response(status, [
-        ("Content-Type", "application/json"),
-        ("Content-Length", str(len(body))),
-
-
-
-        ("Cache-Control", "no-store"),
-    ])
+    start_response(
+        status,
+        [
+            ("Content-Type", "application/json"),
+            ("Content-Length", str(len(body))),
+            ("Cache-Control", "no-store"),
+        ],
+    )
     return [body]
 
 
@@ -178,7 +177,9 @@ def _clean_flow_request(body: dict) -> Tuple[Optional[dict], Optional[str]]:
         if value is None or value == "":
             continue
         try:
-            request[key] = bool(value) if FLOW_FIELDS[key] is bool else FLOW_FIELDS[key](value)
+            request[key] = (
+                bool(value) if FLOW_FIELDS[key] is bool else FLOW_FIELDS[key](value)
+            )
         except (TypeError, ValueError):
             return None, f"{key}: expected {FLOW_FIELDS[key].__name__}, got {value!r}"
 
@@ -208,15 +209,21 @@ def make_app(controller):
         target = (STATIC / name).resolve()
 
         if not str(target).startswith(str(STATIC)) or not target.is_file():
-            return _json_response(start_response, {"ok": False, "reason": "not found"},
-                                  "404 Not Found")
+            return _json_response(
+                start_response, {"ok": False, "reason": "not found"}, "404 Not Found"
+            )
         body = target.read_bytes()
-        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        start_response("200 OK", [
-            ("Content-Type", content_type),
-            ("Content-Length", str(len(body))),
-            ("Cache-Control", "no-store"),
-        ])
+        content_type = (
+            mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        )
+        start_response(
+            "200 OK",
+            [
+                ("Content-Type", content_type),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "no-store"),
+            ],
+        )
         return [body]
 
     def static(environ, start_response, name):
@@ -249,18 +256,19 @@ def make_app(controller):
         """POST /api/flows, clean, validate, and admit a flow request."""
         request, error = _clean_flow_request(_read_body(environ))
         if error:
-            return _json_response(start_response, {"ok": False, "reason": error},
-                                  "400 Bad Request")
+            return _json_response(
+                start_response, {"ok": False, "reason": error}, "400 Bad Request"
+            )
         reply = controller.request_flow(**request)
-
 
         return _json_response(start_response, reply)
 
     def remove_flow(environ, start_response, flow_id):
         """DELETE /api/flows/<id>, release one flow."""
         reply = controller.remove_flow(flow_id)
-        return _json_response(start_response, reply,
-                              "200 OK" if reply.get("ok") else "404 Not Found")
+        return _json_response(
+            start_response, reply, "200 OK" if reply.get("ok") else "404 Not Found"
+        )
 
     def clear(environ, start_response, *_):
         """POST /api/clear, release every flow."""
@@ -275,12 +283,15 @@ def make_app(controller):
         """
         body = _read_body(environ)
         if "up" not in body:
-            return _json_response(start_response,
-                                  {"ok": False, "reason": "body must set \"up\" to true or false"},
-                                  "400 Bad Request")
+            return _json_response(
+                start_response,
+                {"ok": False, "reason": 'body must set "up" to true or false'},
+                "400 Bad Request",
+            )
         reply = controller.set_link_state(link_id, bool(body["up"]))
-        return _json_response(start_response, reply,
-                              "200 OK" if reply.get("ok") else "400 Bad Request")
+        return _json_response(
+            start_response, reply, "200 OK" if reply.get("ok") else "400 Bad Request"
+        )
 
     router.add("GET", "/", page)
     router.add("GET", "/index.html", page)
@@ -294,14 +305,15 @@ def make_app(controller):
     router.add("POST", "/api/links/([A-Za-z0-9_-]+)", set_link)
 
     def application(environ, start_response):
-        """WSGI entry point: route the request to a handler.
-        """
+        """WSGI entry point: route the request to a handler."""
         method = environ.get("REQUEST_METHOD", "GET")
         path = environ.get("PATH_INFO", "/")
         handler, groups = router.match(method, path)
         if handler is None:
             status = "405 Method Not Allowed" if groups[0] == "405" else "404 Not Found"
-            return _json_response(start_response, {"ok": False, "reason": status}, status)
+            return _json_response(
+                start_response, {"ok": False, "reason": status}, status
+            )
         try:
             return handler(environ, start_response, *groups)
         except Exception as exc:
@@ -327,6 +339,8 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 
 
 class _QuietHandler(WSGIRequestHandler):
+    """Request handler that logs nothing."""
+
     def log_message(self, *args):
         """Suppress per-request access log lines.
 
@@ -349,8 +363,11 @@ def serve(controller, addr) -> None:
         addr: ``(host, port)`` tuple to bind.
     """
     server = make_server(
-        addr[0], addr[1], make_app(controller),
-        server_class=_ThreadingWSGIServer, handler_class=_QuietHandler,
+        addr[0],
+        addr[1],
+        make_app(controller),
+        server_class=_ThreadingWSGIServer,
+        handler_class=_QuietHandler,
     )
     controller.logger.info("dashboard on http://%s:%d", *addr)
     server.serve_forever()

@@ -24,6 +24,18 @@ WidthFn = Callable[[str], float]
 
 @dataclass(frozen=True)
 class Path:
+    """One route through the core, and the capacity it can carry.
+
+    ``bottleneck`` is the narrowest residual capacity along the route, which
+    is what decides whether a request fits: a path is only as wide as its
+    tightest link.
+
+    Attributes:
+        switches: Switches traversed, source first.
+        links: Link IDs between them; always one shorter than *switches*.
+        bottleneck: Residual capacity of the narrowest link, in Mbps.
+    """
+
     switches: Tuple[str, ...]
     links: Tuple[str, ...]
     bottleneck: float
@@ -43,7 +55,9 @@ class Path:
         return {
             "switches": list(self.switches),
             "links": list(self.links),
-            "bottleneck_mbps": None if self.bottleneck == INF else round(self.bottleneck, 4),
+            "bottleneck_mbps": (
+                None if self.bottleneck == INF else round(self.bottleneck, 4)
+            ),
             "hops": self.hops,
         }
 
@@ -72,7 +86,9 @@ def adjacency(topology: Topology) -> Adjacency:
     return adj
 
 
-def _reconstruct(prev: Dict[str, Tuple[str, str]], src: str, dst: str, bottleneck: float) -> Path:
+def _reconstruct(
+    prev: Dict[str, Tuple[str, str]], src: str, dst: str, bottleneck: float
+) -> Path:
     """Rebuild a Path from Dijkstra's predecessor table.
 
     Args:
@@ -151,8 +167,10 @@ def widest_path(
             candidate = (min(bottleneck, link_width), hops + 1)
             current = best.get(neighbour)
 
-            if current is None or (candidate[0] > current[0] + EPS) or (
-                abs(candidate[0] - current[0]) <= EPS and candidate[1] < current[1]
+            if (
+                current is None
+                or (candidate[0] > current[0] + EPS)
+                or (abs(candidate[0] - current[0]) <= EPS and candidate[1] < current[1])
             ):
                 best[neighbour] = candidate
                 prev[neighbour] = (node, link_id)
@@ -212,8 +230,10 @@ def shortest_path(
                 continue
             candidate = (hops + 1, min(bottleneck, link_width))
             current = best.get(neighbour)
-            if current is None or candidate[0] < current[0] or (
-                candidate[0] == current[0] and candidate[1] > current[1] + EPS
+            if (
+                current is None
+                or candidate[0] < current[0]
+                or (candidate[0] == current[0] and candidate[1] > current[1] + EPS)
             ):
                 best[neighbour] = candidate
                 prev[neighbour] = (node, link_id)
@@ -253,5 +273,7 @@ def find_path(
     try:
         algorithm = POLICIES[policy]
     except KeyError:
-        raise ValueError(f"unknown policy {policy!r}, expected one of {sorted(POLICIES)}")
+        raise ValueError(
+            f"unknown policy {policy!r}, expected one of {sorted(POLICIES)}"
+        )
     return algorithm(adj, src, dst, width, minimum)

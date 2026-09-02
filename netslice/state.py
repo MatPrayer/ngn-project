@@ -26,17 +26,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from netslice.topology import Topology
 
-
-
 EPS = 1e-9
 
 
-
-
 HOLD_DOWN_SEC = 5.0
-
-
-
 
 
 TP_PORT_BASE = 5201
@@ -77,8 +70,6 @@ class FlowEntry:
     ip_proto: int = IPPROTO_TCP
     idle_timeout: int = 30
     hard_timeout: int = 0
-
-
 
     policy: str = "widest"
     tie_break: str = "fewest"
@@ -154,9 +145,9 @@ class NetworkState:
     """Residual-capacity graph plus the flow table.
 
     Only *core* links (switch to switch) carry reservable capacity. Access
-    links are 100 Mbps by construction, far above anything a core link can
-    carry, so they can never be the binding constraint and are left out of the
-    accounting entirely.
+    links are built at 100 Mbps, far above any core link, so they can never be
+    the binding constraint on a path and are left out of the accounting
+    entirely.
     """
 
     def __init__(self, topology: Topology, hold_down_sec: float = HOLD_DOWN_SEC):
@@ -174,17 +165,14 @@ class NetworkState:
             link.id: float(link.capacity_mbps) for link in topology.core_links()
         }
         self.residual: Dict[str, float] = dict(self.capacity)
-        self.link_flows: Dict[str, Set[str]] = {link_id: set() for link_id in self.capacity}
+        self.link_flows: Dict[str, Set[str]] = {
+            link_id: set() for link_id in self.capacity
+        }
         self.flows: Dict[str, FlowEntry] = {}
-
-
-
 
         self.down_links: Set[str] = set()
 
         self._counter = itertools.count(1)
-
-
 
     def new_flow(
         self,
@@ -198,7 +186,9 @@ class NetworkState:
         policy: str = "widest",
         tie_break: str = "fewest",
     ) -> FlowEntry:
-        """Mint an unplaced flow entry. It holds no capacity until reserved.
+        """Mint a flow entry that has not been placed yet.
+
+        The entry holds no capacity until :meth:`reserve` charges it to a path.
 
         Args:
             src: Source host name (e.g. ``"h1"``).
@@ -233,9 +223,15 @@ class NetworkState:
         )
 
     def reserve(
-        self, flow: FlowEntry, path: Sequence[str], links: Sequence[str], force: bool = False
+        self,
+        flow: FlowEntry,
+        path: Sequence[str],
+        links: Sequence[str],
+        force: bool = False,
     ) -> None:
-        """Charge *flow* to every link along *path*. The only place residual shrinks.
+        """Charge *flow* to every link along *path*.
+
+        With :meth:`release`, the only place residual capacity ever changes.
 
         Atomically checks all links before committing. If any link is short
         (and *force* is ``False``), raises :exc:`InsufficientCapacity` and
@@ -276,7 +272,9 @@ class NetworkState:
         flow.placed_at = time.time()
         self.flows[flow.flow_id] = flow
 
-    def release(self, flow_id: str, new_state: FlowState) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    def release(
+        self, flow_id: str, new_state: FlowState
+    ) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
         """Give the flow's capacity back and move it out of ``ACTIVE``.
 
         Returns the former ``(path, links)`` so the caller can delete the
@@ -300,8 +298,9 @@ class NetworkState:
                 self.residual[link_id] += flow.bandwidth_mbps
                 self.link_flows[link_id].discard(flow_id)
 
-
-                self.residual[link_id] = min(self.residual[link_id], self.capacity[link_id])
+                self.residual[link_id] = min(
+                    self.residual[link_id], self.capacity[link_id]
+                )
 
         flow.state = new_state
         flow.path = ()
@@ -333,8 +332,6 @@ class NetworkState:
         """
         now = now if now is not None else time.time()
         self.flows[flow_id].hold_down_until = now + self.hold_down_sec
-
-
 
     def available(self, link_id: str) -> float:
         """Residual capacity usable *right now*: zero for a down link.
@@ -456,8 +453,6 @@ class NetworkState:
             return None
         return chosen
 
-
-
     def set_link_down(self, link_id: str) -> List[FlowEntry]:
         """Mark a link unusable and return the flows crossing it, worst first.
 
@@ -483,8 +478,6 @@ class NetworkState:
             link_id: Core link identifier.
         """
         self.down_links.discard(link_id)
-
-
 
     def active_flows(self) -> List[FlowEntry]:
         """Return all flows that are currently holding capacity.
