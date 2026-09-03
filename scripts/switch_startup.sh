@@ -7,8 +7,9 @@ switch_startup() {
 
 	/usr/share/openvswitch/scripts/ovs-ctl start --system-id=random --no-mlockall
 
-	# Caller may pre-set GW (Docker Desktop, see D20); otherwise the
-	# container default gateway is the host running the controller.
+	# On Linux the container's default gateway is the host running the
+	# controller. On Docker Desktop it is not reachable, so the caller
+	# pre-sets GW to an address that is.
 	GW=${GW:-$(ip route | awk '/^default/ {print $3}')}
 
 	ovs-vsctl add-br br0
