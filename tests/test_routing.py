@@ -75,7 +75,9 @@ class WidestPathTest(unittest.TestCase):
 
     def test_minimum_prunes_infeasible_links(self):
         """Verify no path is returned when no path meets the minimum capacity requirement."""
-        self.assertIsNone(routing.widest_path(self.adj, "s1", "s4", self.width, minimum=25))
+        self.assertIsNone(
+            routing.widest_path(self.adj, "s1", "s4", self.width, minimum=25)
+        )
         path = routing.widest_path(self.adj, "s2", "s5", self.width, minimum=20)
         self.assertEqual(path.switches, ("s2", "s5"))
 

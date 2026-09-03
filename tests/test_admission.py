@@ -33,7 +33,9 @@ class AdmissionTestCase(unittest.TestCase):
         Returns:
             Decision: The admission control decision.
         """
-        return admission.evaluate(self.state, self.adj, src, dst, bandwidth, priority, **kwargs)
+        return admission.evaluate(
+            self.state, self.adj, src, dst, bandwidth, priority, **kwargs
+        )
 
     def admit(self, src="s1", dst="s4", bandwidth=4.0, priority=1, **kwargs):
         """Evaluate and apply an admission decision, the way the controller does.
@@ -57,8 +59,9 @@ class AdmissionTestCase(unittest.TestCase):
         for victim_id in decision.victims:
             self.state.release(victim_id, FlowState.PREEMPTED)
         flow = self.state.new_flow("h1", "h4", bandwidth, priority)
-        self.state.reserve(flow, decision.path.switches, decision.path.links,
-                           force=decision.forced)
+        self.state.reserve(
+            flow, decision.path.switches, decision.path.links, force=decision.forced
+        )
         return flow, decision
 
     def fill(self, link_id, bandwidth, priority=1):
@@ -148,7 +151,9 @@ class PreemptionAdmissionTest(AdmissionTestCase):
     def test_high_priority_preempts_when_nothing_is_free(self):
         """Verify a high-priority flow is accepted via preemption when all links are full."""
         self.saturate_s1_s4(priority=1)
-        self.assertFalse(self.evaluate(bandwidth=4, priority=5, allow_preemption=False).accepted)
+        self.assertFalse(
+            self.evaluate(bandwidth=4, priority=5, allow_preemption=False).accepted
+        )
 
         decision = self.evaluate(bandwidth=4, priority=5)
         self.assertTrue(decision.accepted)
@@ -191,9 +196,12 @@ class PreemptionAdmissionTest(AdmissionTestCase):
         self.assertTrue(decision.preemption_used)
         for link_id, capacity in self.state.capacity.items():
             charged = sum(
-                self.state.flows[f].bandwidth_mbps for f in self.state.link_flows[link_id]
+                self.state.flows[f].bandwidth_mbps
+                for f in self.state.link_flows[link_id]
             )
-            self.assertAlmostEqual(self.state.residual[link_id] + charged, capacity, places=6)
+            self.assertAlmostEqual(
+                self.state.residual[link_id] + charged, capacity, places=6
+            )
             self.assertGreaterEqual(self.state.residual[link_id], -1e-9)
 
 

@@ -15,7 +15,15 @@ class StateTestCase(unittest.TestCase):
         """Initialize a fresh NetworkState from the default topology."""
         self.state = NetworkState(default_topology())
 
-    def place(self, src="h1", dst="h4", bandwidth=4.0, priority=1, links=("s1--s2",), path=("s1", "s2")):
+    def place(
+        self,
+        src="h1",
+        dst="h4",
+        bandwidth=4.0,
+        priority=1,
+        links=("s1--s2",),
+        path=("s1", "s2"),
+    ):
         """Create a flow and reserve capacity on the given path and links.
 
         Args:
@@ -41,9 +49,12 @@ class StateTestCase(unittest.TestCase):
         """
         for link_id, capacity in self.state.capacity.items():
             charged = sum(
-                self.state.flows[f].bandwidth_mbps for f in self.state.link_flows[link_id]
+                self.state.flows[f].bandwidth_mbps
+                for f in self.state.link_flows[link_id]
             )
-            self.assertAlmostEqual(self.state.residual[link_id] + charged, capacity, places=6)
+            self.assertAlmostEqual(
+                self.state.residual[link_id] + charged, capacity, places=6
+            )
             for flow_id in self.state.link_flows[link_id]:
                 self.assertTrue(self.state.flows[flow_id].holds_capacity())
 
@@ -106,7 +117,9 @@ class ReserveReleaseTest(StateTestCase):
     def test_link_down_returns_affected_flows_by_priority(self):
         """Verify set_link_down returns affected flows sorted by priority descending."""
         low = self.place(bandwidth=2, priority=1, links=("s1--s2",))
-        high = self.place(src="h2", dst="h3", bandwidth=2, priority=9, links=("s1--s2",))
+        high = self.place(
+            src="h2", dst="h3", bandwidth=2, priority=9, links=("s1--s2",)
+        )
         self.place(src="h3", dst="h6", bandwidth=2, priority=5, links=("s3--s6",))
         affected = self.state.set_link_down("s1--s2")
         self.assertEqual([f.flow_id for f in affected], [high.flow_id, low.flow_id])
@@ -139,8 +152,12 @@ class PreemptionTest(StateTestCase):
         """Verify a flow in hold-down is excluded from preemptable capacity until the timer expires."""
         flow = self.place(bandwidth=3, priority=1, links=("s1--s2",))
         self.state.mark_hold_down(flow.flow_id, now=1000.0)
-        self.assertAlmostEqual(self.state.preemptable_capacity("s1--s2", 5, now=1001.0), 7)
-        self.assertAlmostEqual(self.state.preemptable_capacity("s1--s2", 5, now=1010.0), 10)
+        self.assertAlmostEqual(
+            self.state.preemptable_capacity("s1--s2", 5, now=1001.0), 7
+        )
+        self.assertAlmostEqual(
+            self.state.preemptable_capacity("s1--s2", 5, now=1010.0), 10
+        )
 
     def test_fewest_prefers_low_priority_then_fat_flows(self):
         """Verify fewest tie-break selects the single largest victim that covers the deficit."""
