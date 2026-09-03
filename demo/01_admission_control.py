@@ -13,7 +13,6 @@ nothing.
 
 from _common import Demo, green, iperf_parallel, red, require_ready, reset
 
-
 REQUEST_MBPS = 3
 ATTEMPTS = 9
 
@@ -38,8 +37,10 @@ def measure(demo, flows, label):
         rate = rates[flow["tp_dst"]]
         ok = rate is not None and rate >= 0.85 * flow["bandwidth_mbps"]
         met += ok
-        demo.say(f"{flow['flow_id']:<5} asked {flow['bandwidth_mbps']:>4.1f}   "
-                 f"got {(green if ok else red)(f'{rate} Mbps')}")
+        demo.say(
+            f"{flow['flow_id']:<5} asked {flow['bandwidth_mbps']:>4.1f}   "
+            f"got {(green if ok else red)(f'{rate} Mbps')}"
+        )
     demo.say(f"{label}: {met}/{len(flows)} met their reservation")
     return met
 
@@ -56,12 +57,15 @@ def main():
     require_ready()
     reset()
 
-    demo.step(f"Offer {ATTEMPTS} requests of {REQUEST_MBPS} Mbps, h1 -> h4, "
-              f"admission control ON")
+    demo.step(
+        f"Offer {ATTEMPTS} requests of {REQUEST_MBPS} Mbps, h1 -> h4, "
+        f"admission control ON"
+    )
     admitted = []
     for _ in range(ATTEMPTS):
-        reply = demo.allocate("h1", "h4", REQUEST_MBPS, idle_timeout=300,
-                              allow_preemption=False)
+        reply = demo.allocate(
+            "h1", "h4", REQUEST_MBPS, idle_timeout=300, allow_preemption=False
+        )
         if reply.get("ok"):
             admitted.append(reply["flow"])
     demo.say(f"{len(admitted)} admitted, {ATTEMPTS - len(admitted)} refused")
@@ -79,8 +83,14 @@ def main():
     demo.step(f"Same {ATTEMPTS} requests, admission control OFF")
     forced = []
     for _ in range(ATTEMPTS):
-        reply = demo.allocate("h1", "h4", REQUEST_MBPS, policy="shortest",
-                              idle_timeout=300, admission_control=False)
+        reply = demo.allocate(
+            "h1",
+            "h4",
+            REQUEST_MBPS,
+            policy="shortest",
+            idle_timeout=300,
+            admission_control=False,
+        )
         if reply.get("ok"):
             forced.append(reply["flow"])
     demo.say(f"{len(forced)} admitted, 0 refused")
@@ -96,10 +106,14 @@ def main():
     demo.pause()
 
     demo.step("Result")
-    demo.say(f"admission control ON    {len(admitted)}/{ATTEMPTS} admitted   "
-             f"{green(f'{met_with} satisfied')}")
-    demo.say(f"admission control OFF   {len(forced)}/{ATTEMPTS} admitted   "
-             f"{red(f'{met_without} satisfied')}")
+    demo.say(
+        f"admission control ON    {len(admitted)}/{ATTEMPTS} admitted   "
+        f"{green(f'{met_with} satisfied')}"
+    )
+    demo.say(
+        f"admission control OFF   {len(forced)}/{ATTEMPTS} admitted   "
+        f"{red(f'{met_without} satisfied')}"
+    )
 
     reset()
     demo.done()

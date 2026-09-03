@@ -12,7 +12,6 @@ preemption rights of their own, so a preemption cannot cascade.
 
 from _common import Demo, require_ready, reset
 
-
 OUT_OF_S1 = ["s1--s2", "s1--s4", "s1--s6"]
 
 
@@ -30,8 +29,9 @@ def main():
 
     demo.step("Saturate every path out of s1 with priority-1 flows")
     for dst, bandwidth in (("h2", 10), ("h6", 10), ("h4", 4)):
-        demo.allocate("h1", dst, bandwidth, priority=1, idle_timeout=300,
-                      allow_preemption=False)
+        demo.allocate(
+            "h1", dst, bandwidth, priority=1, idle_timeout=300, allow_preemption=False
+        )
     demo.show_links(OUT_OF_S1)
     demo.pause()
 
@@ -47,8 +47,10 @@ def main():
     demo.step("Flow table after preemption")
     demo.show_flows(only_active=False)
     if high.get("preempted"):
-        demo.note(f"{', '.join(high['preempted'])} released, rerouted without "
-                  f"preemption rights, no path with room -> FAILED")
+        demo.note(
+            f"{', '.join(high['preempted'])} released, rerouted without "
+            f"preemption rights, no path with room -> FAILED"
+        )
     demo.pause()
 
     demo.step("Capacity out of s1")

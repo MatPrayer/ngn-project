@@ -61,15 +61,19 @@ def main():
             moved = current
             break
     if moved:
-        demo.good(f"{flow_id}  {'-'.join(original)} -> {'-'.join(moved['path'])}"
-                  f"   reroutes={moved['reroutes']}  {moved['state']}")
+        demo.good(
+            f"{flow_id}  {'-'.join(original)} -> {'-'.join(moved['path'])}"
+            f"   reroutes={moved['reroutes']}  {moved['state']}"
+        )
     else:
         demo.bad("flow did not move")
     _report_latency(demo)
     time.sleep(3)
     current = flow_by_id(flow_id)
-    demo.say(f"throughput on the new path: "
-             f"{current.get('throughput_mbps') if current else '-'} Mbps")
+    demo.say(
+        f"throughput on the new path: "
+        f"{current.get('throughput_mbps') if current else '-'} Mbps"
+    )
     demo.pause()
 
     demo.step("Restore the link")
@@ -77,7 +81,7 @@ def main():
     time.sleep(2)
     current = flow_by_id(flow_id)
     demo.say(f"{flow_id} on {'-'.join(current['path']) if current else '-'}")
-    demo.note("healthy flows are not moved back ")
+    demo.note("healthy flows are not moved back: churn for no gain")
     demo.pause()
 
     demo.step("Flow with no alternative path")
@@ -95,8 +99,10 @@ def main():
             time.sleep(3)
             recovered = flow_by_id(stuck["flow"]["flow_id"])
             if recovered and recovered["state"] == "ACTIVE":
-                demo.good(f"link restored -> {recovered['flow_id']} ACTIVE on "
-                          f"{'-'.join(recovered['path'])}")
+                demo.good(
+                    f"link restored -> {recovered['flow_id']} ACTIVE on "
+                    f"{'-'.join(recovered['path'])}"
+                )
 
     reset()
     demo.done()
@@ -122,8 +128,10 @@ def _report_latency(demo):
     reroutes = [e for e in events if e["kind"] == "rerouted"]
     if downs and reroutes and reroutes[-1]["mono"] >= downs[-1]["mono"]:
         gap = (reroutes[-1]["mono"] - downs[-1]["mono"]) * 1000
-        demo.say(f"port-down to new path installed: {gap:.1f} ms "
-                 f"(+ ~37 ms for the switch to notice)")
+        demo.say(
+            f"port-down to new path installed: {gap:.1f} ms "
+            f"(+ ~37 ms for the switch to notice)"
+        )
 
 
 if __name__ == "__main__":

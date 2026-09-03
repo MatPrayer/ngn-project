@@ -15,7 +15,6 @@ Measured finding: on this topology the two admit the *same* number of requests
 
 from _common import Demo, links, request, require_ready, reset
 
-
 SEQUENCE = [("h1", "h4"), ("h3", "h6"), ("h2", "h5")] * 4
 REQUEST_MBPS = 2
 
@@ -33,24 +32,26 @@ def main():
 
     demo.step("Same request, each policy: which path is chosen")
 
-
-
     for policy in ("shortest", "widest"):
         reset()
-        reply = request(src="h1", dst="h4", bandwidth_mbps=REQUEST_MBPS,
-                        policy=policy, idle_timeout=300, allow_preemption=False)
-        demo.say(f"{policy:<9} {'-'.join(reply['flow']['path']):<14} "
-                 f"bottleneck {reply['bottleneck_mbps']} Mbps")
+        reply = request(
+            src="h1",
+            dst="h4",
+            bandwidth_mbps=REQUEST_MBPS,
+            policy=policy,
+            idle_timeout=300,
+            allow_preemption=False,
+        )
+        demo.say(
+            f"{policy:<9} {'-'.join(reply['flow']['path']):<14} "
+            f"bottleneck {reply['bottleneck_mbps']} Mbps"
+        )
         demo.pause(f"{policy} path is live on the dashboard")
-    demo.note("unmetered, those paths carry 3.83 and 9.56 Mbps "
-              "(tools/validate_topology.py)")
+    demo.note(
+        "unmetered, those paths carry 3.83 and 9.56 Mbps "
+        "(tools/validate_topology.py)"
+    )
     demo.pause()
-
-
-
-
-
-
 
     demo.step(f"Same {len(SEQUENCE)} requests of {REQUEST_MBPS} Mbps under each policy")
     results = {}
@@ -58,8 +59,14 @@ def main():
         reset()
         admitted = 0
         for src, dst in SEQUENCE:
-            reply = request(src=src, dst=dst, bandwidth_mbps=REQUEST_MBPS,
-                            policy=policy, idle_timeout=300, allow_preemption=False)
+            reply = request(
+                src=src,
+                dst=dst,
+                bandwidth_mbps=REQUEST_MBPS,
+                policy=policy,
+                idle_timeout=300,
+                allow_preemption=False,
+            )
             admitted += bool(reply.get("ok"))
         results[policy] = (admitted, _utilisation())
         demo.say(f"{policy:<9} done")
@@ -90,7 +97,11 @@ def _utilisation():
         representing used-to-capacity ratio.
     """
     return {
-        link_id: (entry["used_mbps"] / entry["capacity_mbps"]) if entry["capacity_mbps"] else 0.0
+        link_id: (
+            (entry["used_mbps"] / entry["capacity_mbps"])
+            if entry["capacity_mbps"]
+            else 0.0
+        )
         for link_id, entry in links().items()
     }
 

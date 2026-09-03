@@ -81,9 +81,6 @@ def blue(t):
     return _c("36", t)
 
 
-
-
-
 def sh(machine: str, command: str):
     """Run a shell command inside a Kathara lab container.
 
@@ -135,7 +132,10 @@ def iperf(src: str, dst: str, port: int, seconds: int = 6):
     if not match:
         return None
     try:
-        return round(json.loads(match.group(0))["end"]["sum_received"]["bits_per_second"] / 1e6, 2)
+        return round(
+            json.loads(match.group(0))["end"]["sum_received"]["bits_per_second"] / 1e6,
+            2,
+        )
     except (json.JSONDecodeError, KeyError):
         return None
 
@@ -159,9 +159,12 @@ def iperf_parallel(specs, seconds: int = 6) -> dict:
         iperf_server(dst, port)
     time.sleep(0.8)
     for src, dst, port in specs:
-        sh(src, f"rm -f /tmp/r-{port}.json; "
-                f"nohup iperf3 -c {TOPOLOGY.host_ip(dst)} -p {port} -t {seconds} "
-                f"-J --logfile /tmp/r-{port}.json >/dev/null 2>&1 &")
+        sh(
+            src,
+            f"rm -f /tmp/r-{port}.json; "
+            f"nohup iperf3 -c {TOPOLOGY.host_ip(dst)} -p {port} -t {seconds} "
+            f"-J --logfile /tmp/r-{port}.json >/dev/null 2>&1 &",
+        )
     time.sleep(seconds + 3)
 
     results = {}
@@ -169,9 +172,15 @@ def iperf_parallel(specs, seconds: int = 6) -> dict:
         out, _, _ = sh(src, f"cat /tmp/r-{port}.json 2>/dev/null")
         match = re.search(r"\{.*\}", out, re.S)
         try:
-            results[port] = round(
-                json.loads(match.group(0))["end"]["sum_received"]["bits_per_second"] / 1e6, 2
-            ) if match else None
+            results[port] = (
+                round(
+                    json.loads(match.group(0))["end"]["sum_received"]["bits_per_second"]
+                    / 1e6,
+                    2,
+                )
+                if match
+                else None
+            )
         except (json.JSONDecodeError, KeyError, AttributeError):
             results[port] = None
     return results
@@ -191,17 +200,17 @@ def iperf_background(src: str, dst: str, port: int, seconds: int) -> None:
     """
     iperf_server(dst, port)
     time.sleep(0.6)
-    sh(src, f"nohup iperf3 -c {TOPOLOGY.host_ip(dst)} -p {port} -t {seconds} "
-            f"-i 1 --logfile /tmp/iperf-client-{port}.log >/dev/null 2>&1 &")
+    sh(
+        src,
+        f"nohup iperf3 -c {TOPOLOGY.host_ip(dst)} -p {port} -t {seconds} "
+        f"-i 1 --logfile /tmp/iperf-client-{port}.log >/dev/null 2>&1 &",
+    )
 
 
 def kill_iperf() -> None:
     """Kill every iperf3 process in all host containers."""
     for host in TOPOLOGY.hosts:
         sh(host, "pkill iperf3 || true")
-
-
-
 
 
 def request(**kwargs) -> dict:
@@ -274,9 +283,6 @@ def path_of(flow_id: str) -> str:
     return "-".join(flow["path"]) if flow and flow["path"] else "-"
 
 
-
-
-
 class Demo:
     """A numbered, narrated sequence of steps."""
 
@@ -288,10 +294,16 @@ class Demo:
             description (str): Optional one-line description shown with the title.
         """
         parser = argparse.ArgumentParser(description=f"{title}, {description}")
-        parser.add_argument("--no-pause", action="store_true",
-                            help="run straight through, for a rehearsal")
-        parser.add_argument("--quick", action="store_true",
-                            help="shorter iperf runs; less accurate, faster")
+        parser.add_argument(
+            "--no-pause",
+            action="store_true",
+            help="run straight through, for a rehearsal",
+        )
+        parser.add_argument(
+            "--quick",
+            action="store_true",
+            help="shorter iperf runs; less accurate, faster",
+        )
         self.args = parser.parse_args()
         self.paused = not self.args.no_pause and sys.stdin.isatty()
         self.n = 0
@@ -301,8 +313,6 @@ class Demo:
         print()
         print(f"  {bold(title)}")
         print(dim("  " + "─" * 66))
-
-
 
     def step(self, text: str) -> None:
         """Print a bold numbered step header.
@@ -394,8 +404,6 @@ class Demo:
         else:
             time.sleep(0.7)
 
-
-
     def allocate(self, src, dst, bandwidth, **kwargs) -> dict:
         """Request a new flow from the controller and print the result.
 
@@ -414,8 +422,10 @@ class Demo:
         priority = kwargs.get("priority", 1)
         if reply.get("ok"):
             flow = reply["flow"]
-            line = (f"ADMITTED  {flow['flow_id']}  {src}->{dst}  {bandwidth} Mbps  "
-                    f"prio {priority}  via {'-'.join(flow['path'])}")
+            line = (
+                f"ADMITTED  {flow['flow_id']}  {src}->{dst}  {bandwidth} Mbps  "
+                f"prio {priority}  via {'-'.join(flow['path'])}"
+            )
             self.good(line)
             if reply.get("preempted"):
                 self.warn(f"          preempted {', '.join(reply['preempted'])}")
@@ -436,11 +446,17 @@ class Demo:
             entry = data[link_id]
             used, capacity = entry["used_mbps"], entry["capacity_mbps"]
             bar_width = 22
-            filled = 0 if capacity <= 0 else min(bar_width, round(bar_width * used / capacity))
+            filled = (
+                0
+                if capacity <= 0
+                else min(bar_width, round(bar_width * used / capacity))
+            )
             bar = "█" * filled + dim("·" * (bar_width - filled))
             flag = red("  DOWN") if entry["down"] else ""
-            self.say(f"{link_id:<9} {bar} {used:>5.1f}/{capacity:<5.1f} Mbps"
-                     f"  residual {entry['residual_mbps']:>5.1f}{flag}")
+            self.say(
+                f"{link_id:<9} {bar} {used:>5.1f}/{capacity:<5.1f} Mbps"
+                f"  residual {entry['residual_mbps']:>5.1f}{flag}"
+            )
 
     def show_flows(self, only_active: bool = True) -> None:
         """Print a table of flows with state, path, and bandwidth.
@@ -455,9 +471,11 @@ class Demo:
             return
         for f in rows:
             state = {"ACTIVE": green, "FAILED": red}.get(f["state"], yellow)(f["state"])
-            self.say(f"{f['flow_id']:<4} {f['src']}->{f['dst']:<3} "
-                     f"{f['bandwidth_mbps']:>5.1f} Mbps  prio {f['priority']}  "
-                     f"{'-'.join(f['path']) or '-':<14} {state}")
+            self.say(
+                f"{f['flow_id']:<4} {f['src']}->{f['dst']:<3} "
+                f"{f['bandwidth_mbps']:>5.1f} Mbps  prio {f['priority']}  "
+                f"{'-'.join(f['path']) or '-':<14} {state}"
+            )
 
     def done(self, message: str = "") -> None:
         """Print a closing separator and optional final message.
@@ -470,9 +488,6 @@ class Demo:
         if message:
             print(f"  {bold(message)}")
         print()
-
-
-
 
 
 def reset() -> None:
@@ -504,19 +519,21 @@ def require_ready() -> None:
     machines = topo.running_machines()
     if not machines:
         raise SystemExit(
-            red("  the lab is not deployed\n") +
-            "    python -m netslice.topology deploy"
+            red("  the lab is not deployed\n")
+            + "    python -m netslice.topology deploy"
         )
     try:
         state = send({"cmd": "state"})
     except OSError:
         raise SystemExit(
-            red("  the controller is not running\n") +
-            "    python -m netslice.controller"
+            red("  the controller is not running\n")
+            + "    python -m netslice.controller"
         )
     offline = [s for s, info in state["switches"].items() if not info["connected"]]
     if offline:
         raise SystemExit(
-            red(f"  {len(offline)} switch(es) not connected: {', '.join(sorted(offline))}\n") +
-            "    give them a few seconds after deploying, then try again"
+            red(
+                f"  {len(offline)} switch(es) not connected: {', '.join(sorted(offline))}\n"
+            )
+            + "    give them a few seconds after deploying, then try again"
         )

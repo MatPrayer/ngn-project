@@ -60,7 +60,6 @@ def main():
     require_ready()
     reset()
 
-
     demo.step(f"idle_timeout={IDLE}s, no traffic on the flow")
     quiet = demo.allocate("h3", "h6", 3, idle_timeout=IDLE)
     flow_id = quiet["flow"]["flow_id"]
@@ -72,16 +71,18 @@ def main():
         flow = flow_by_id(flow_id)
         if flow and flow["state"] != "ACTIVE":
             demo.live_done()
-            demo.good(f"{flow_id} {flow['state']}, {link} residual "
-                      f"{residual(link)} Mbps")
+            demo.good(
+                f"{flow_id} {flow['state']}, {link} residual " f"{residual(link)} Mbps"
+            )
             break
-        demo.live(f"idle {secs(flow.get('idle_for_sec') if flow else None):<6} "
-                  f"residual {residual(link)} Mbps")
+        demo.live(
+            f"idle {secs(flow.get('idle_for_sec') if flow else None):<6} "
+            f"residual {residual(link)} Mbps"
+        )
     else:
         demo.live_done()
         demo.warn("did not expire")
     demo.pause()
-
 
     reset()
     demo.step(f"idle_timeout={IDLE}s, traffic running")
@@ -94,8 +95,10 @@ def main():
         flow = flow_by_id(busy_id)
         if not flow:
             break
-        demo.live(f"idle {secs(flow.get('idle_for_sec')):<6} "
-                  f"throughput {rate(flow.get('throughput_mbps'))}")
+        demo.live(
+            f"idle {secs(flow.get('idle_for_sec')):<6} "
+            f"throughput {rate(flow.get('throughput_mbps'))}"
+        )
     demo.live_done()
     flow = flow_by_id(busy_id)
     if flow and flow["state"] == "ACTIVE":
@@ -103,7 +106,6 @@ def main():
     else:
         demo.warn("expired despite the traffic")
     demo.pause()
-
 
     reset()
     demo.step(f"hard_timeout={HARD}s, traffic running")
@@ -119,8 +121,10 @@ def main():
             demo.good(f"{hard_id} expired mid-transfer")
             break
         if flow:
-            demo.live(f"{secs(flow.get('remaining_hard_sec')):<6} left   "
-                      f"throughput {rate(flow.get('throughput_mbps'))}")
+            demo.live(
+                f"{secs(flow.get('remaining_hard_sec')):<6} left   "
+                f"throughput {rate(flow.get('throughput_mbps'))}"
+            )
     else:
         demo.live_done()
         demo.warn("did not expire")

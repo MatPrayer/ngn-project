@@ -134,8 +134,6 @@ def main() -> int:
         print(listing())
         return 2
 
-
-
     paused = "--no-pause" not in passthrough and sys.stdin.isatty()
 
     print()
@@ -156,7 +154,6 @@ def main() -> int:
             reset()
             return 130
 
-
         sys.stdout.flush()
         result = subprocess.run([sys.executable, str(HERE / name), *passthrough])
         if result.returncode != 0:
@@ -165,7 +162,11 @@ def main() -> int:
             return result.returncode
 
     reset()
-    done = "all five" if len(scripts) == len(SCRIPTS) else f"{len(scripts)} of {len(SCRIPTS)}"
+    done = (
+        "all five"
+        if len(scripts) == len(SCRIPTS)
+        else f"{len(scripts)} of {len(SCRIPTS)}"
+    )
     print(bold(f"  {done} complete, network back to a clean state"))
     print()
     return 0
