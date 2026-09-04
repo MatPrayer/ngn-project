@@ -50,10 +50,8 @@ ln -sfn "$LAUNCHER" "$LINK"
 echo "linked $LINK -> $LAUNCHER"
 echo "venv python: $VENV/bin/python"
 
-case ":$PATH:" in
-	*":$BIN:"*) : ;;
-	*) echo; echo "WARNING: $BIN is not on your PATH. Add:"; echo "  export PATH=\"$BIN:\$PATH\"";;
-esac
+echo "Activate the venv with:  source $VENV/bin/activate"
+echo "[WARNING] if you are using fish shell, use:  source $VENV/bin/activate.fish"
 
 echo
 echo "done. Try:  $LINK help"
