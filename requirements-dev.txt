@@ -1,0 +1,7 @@
+# Development-only tooling. The deliverable does not need any of this;
+# requirements.txt is what the controller and lab actually run on.
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+#
+# black is invoked by .githooks/pre-commit, which setup.sh enables.
+black==26.5.1
