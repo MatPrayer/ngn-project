@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Format staged Python with black before the commit is written.
+#
+# Enabled by setup.sh, which points core.hooksPath at this directory. To run a
+# commit without it:  git commit --no-verify
+set -eu
+
+ROOT=$(git rev-parse --show-toplevel)
+BLACK="$ROOT/.venv/bin/black"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+[ -n "$staged" ] || exit 0
+
+if [ ! -x "$BLACK" ]; then
+	echo "pre-commit: black not found at $BLACK, leaving formatting alone" >&2
+	echo "            install it with: .venv/bin/pip install black" >&2
+	exit 0
+fi
+
+# A file staged only in part would have its unstaged hunks swept into the
+# commit by the `git add` below. Refuse rather than commit more than was asked.
+partial=""
+while IFS= read -r file; do
+	[ -n "$file" ] || continue
+	if [ -n "$(git diff --name-only -- "$file")" ]; then
+		partial="$partial  $file"$'\n'
+	fi
+done <<EOF
+$staged
+EOF
+
+if [ -n "$partial" ]; then
+	echo "pre-commit: these files are staged only in part, so formatting them" >&2
+	echo "            would add their unstaged changes to the commit:" >&2
+	printf '%s' "$partial" >&2
+	echo "            stage them fully, or format by hand and re-stage:" >&2
+	echo "              .venv/bin/black <file> && git add <file>" >&2
+	exit 1
+fi
+
+changed=""
+while IFS= read -r file; do
+	[ -n "$file" ] || continue
+	[ -f "$file" ] || continue          # staged deletions have no worktree file
+	before=$(git hash-object -- "$file")
+	"$BLACK" --quiet -- "$file"
+	after=$(git hash-object -- "$file")
+	if [ "$before" != "$after" ]; then
+		git add -- "$file"
+		changed="$changed  $file"$'\n'
+	fi
+done <<EOF
+$staged
+EOF
+
+if [ -n "$changed" ]; then
+	echo "pre-commit: black reformatted and re-staged:" >&2
+	printf '%s' "$changed" >&2
+fi

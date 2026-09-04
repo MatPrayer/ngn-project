@@ -41,6 +41,10 @@ if [ ! -x "$LAUNCHER" ]; then
 	chmod +x "$LAUNCHER"
 fi
 
+git -C "$ROOT" config core.hooksPath .githooks
+chmod +x "$ROOT/.githooks/pre-commit"
+echo "git hooks: $ROOT/.githooks (black runs on staged python before each commit)"
+
 mkdir -p "$BIN"
 ln -sfn "$LAUNCHER" "$LINK"
 echo "linked $LINK -> $LAUNCHER"
